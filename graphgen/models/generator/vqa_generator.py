@@ -8,6 +8,18 @@ from graphgen.utils import detect_main_language, logger
 
 
 class VQAGenerator(BaseGenerator):
+    def __init__(
+        self,
+        llm_client,
+        min_answer_length: int = 2,
+        max_answer_length: int = 240,
+        min_question_length: int = 6,
+    ):
+        super().__init__(llm_client)
+        self.min_answer_length = min_answer_length
+        self.max_answer_length = max_answer_length
+        self.min_question_length = min_question_length
+
     @staticmethod
     def build_prompt(
         batch: tuple[list[tuple[str, dict]], list[tuple[Any, Any, dict]]]
@@ -59,6 +71,78 @@ class VQAGenerator(BaseGenerator):
             logger.warning("Error parsing the response %s", response)
         return qa_pairs
 
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        return re.sub(r"\s+", " ", text.strip().lower())
+
+    @staticmethod
+    def _build_context_keywords(
+        batch: tuple[list[tuple[str, dict]], list[tuple[Any, Any, dict]]]
+    ) -> set[str]:
+        nodes, edges = batch
+        raw_text = []
+        raw_text.extend([node[0] for node in nodes])
+        raw_text.extend([node[1].get("description", "") for node in nodes])
+        raw_text.extend([str(edge[0]) for edge in edges])
+        raw_text.extend([str(edge[1]) for edge in edges])
+        raw_text.extend([edge[2].get("description", "") for edge in edges])
+
+        keyword_pattern = re.compile(r"[\u4e00-\u9fff]{2,}|[a-zA-Z][a-zA-Z0-9_\-/]{2,}")
+        return {token.lower() for token in keyword_pattern.findall("\n".join(raw_text))}
+
+    def _is_high_quality_qa(
+        self, qa_pair: dict, context_keywords: set[str], seen_pairs: set[str]
+    ) -> bool:
+        question = qa_pair.get("question", "").strip()
+        answer = qa_pair.get("answer", "").strip()
+        if not question or not answer:
+            return False
+
+        if len(question) < self.min_question_length:
+            return False
+        if len(answer) < self.min_answer_length or len(answer) > self.max_answer_length:
+            return False
+
+        if any(token in question.lower() for token in ["todo", "placeholder", "n/a"]):
+            return False
+        if any(
+            token in answer.lower()
+            for token in ["i don't know", "unknown", "无法确定", "不确定"]
+        ):
+            return False
+
+        normalized_signature = (
+            f"{self._normalize_text(question)}|{self._normalize_text(answer)}"
+        )
+        if normalized_signature in seen_pairs:
+            return False
+
+        context_hits = [
+            keyword
+            for keyword in context_keywords
+            if keyword in question.lower() or keyword in answer.lower()
+        ]
+        if not context_hits:
+            return False
+
+        seen_pairs.add(normalized_signature)
+        return True
+
+    @staticmethod
+    def _extract_img_path(nodes: list[tuple[str, dict]]) -> str:
+        for node in nodes:
+            node_data = node[1]
+            if "metadata" not in node_data or not node_data["metadata"]:
+                continue
+            try:
+                metadata = json.loads(node_data["metadata"]).get("metadata", {})
+            except (json.JSONDecodeError, TypeError):
+                continue
+            img_path = metadata.get("path", "")
+            if img_path:
+                return img_path
+        return ""
+
     async def generate(
         self,
         batch: tuple[
@@ -74,14 +158,28 @@ class VQAGenerator(BaseGenerator):
         response = await self.llm_client.generate_answer(prompt)
         qa_pairs = self.parse_response(response)  # generate one or more QA pairs
         nodes, _ = batch
-        for node in nodes:
-            node_data = node[1]
-            if "metadata" in node_data and node_data["metadata"]:
-                metadata = json.loads(node_data["metadata"])["metadata"]
-                img_path = metadata.get("path", "")
-                for qa in qa_pairs:
-                    qa["img_path"] = img_path
-        return qa_pairs
+        context_keywords = self._build_context_keywords(batch)
+        seen_pairs = set()
+        filtered_pairs = [
+            qa
+            for qa in qa_pairs
+            if self._is_high_quality_qa(
+                qa, context_keywords=context_keywords, seen_pairs=seen_pairs
+            )
+        ]
+
+        if len(filtered_pairs) < len(qa_pairs):
+            logger.info(
+                "VQA quality filter removed %d of %d QA pairs",
+                len(qa_pairs) - len(filtered_pairs),
+                len(qa_pairs),
+            )
+
+        img_path = self._extract_img_path(nodes)
+        for qa in filtered_pairs:
+            qa["img_path"] = img_path
+
+        return filtered_pairs
 
     @staticmethod
     def format_generation_results(result: dict, output_data_format: str) -> dict:

@@ -49,7 +49,12 @@ class GenerateService(BaseOperator):
         elif self.method == "vqa":
             from graphgen.models import VQAGenerator
 
-            self.generator = VQAGenerator(self.llm_client)
+            self.generator = VQAGenerator(
+                self.llm_client,
+                min_answer_length=generate_kwargs.get("min_answer_length", 2),
+                max_answer_length=generate_kwargs.get("max_answer_length", 240),
+                min_question_length=generate_kwargs.get("min_question_length", 6),
+            )
         elif self.method == "multi_choice":
             from graphgen.models import MultiChoiceGenerator
 
