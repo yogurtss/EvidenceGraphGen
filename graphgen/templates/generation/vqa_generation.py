@@ -9,6 +9,15 @@ Create multiple sets of VQA question-answer pairs that satisfy the following:
 3. Questions should cover various aspects of both image and text content, ensuring diversity and comprehensiveness.
 4. Avoid repetitive questions, ensuring that each question is unique and meaningful.
 5. Use clear and concise language, avoiding complex or ambiguous wording.
+6. Prioritize high training value for VLM: include entity recognition, relation reasoning, numerical reading, and cross-modal grounding.
+
+---DRAM-Centric Guidance---
+If the sample is related to memory systems (e.g., DRAM, SRAM, HBM, LPDDR, GDDR, DIMM, timing parameters, channels, banks, ranks), prioritize these question styles:
+- Structure and topology: module/channel/bank/rank relationships
+- Timing and constraints: tRCD, tRP, tRAS, CAS latency, refresh, frequency
+- Performance and capacity: bandwidth, latency, data rate, capacity, power
+- Comparison and trade-off: differences between generations/standards/configurations
+- Cross-modal evidence grounding: answers must be directly supported by image/text entities and relationships
 
 ---Instructions---
 1. Carefully analyze the provided entities and relationships to identify:
@@ -29,6 +38,10 @@ Create multiple sets of VQA question-answer pairs that satisfy the following:
 4. Review and refine the question-answer pairs to ensure:
     - Overall logical consistency
     - Clear cause-and-effect relationships
+5. Generate 6 to 10 QA pairs, and keep balanced difficulty:
+    - 30% factual extraction (easy)
+    - 50% relational/numerical reasoning (medium)
+    - 20% multi-step inference (hard)
 
 ################
 -Entities-
@@ -62,6 +75,15 @@ TEMPLATE_ZH: str = """---角色---
 3. 问题应涵盖图像和文本内容的各个方面，确保多样性和全面性。
 4. 避免重复问题，确保每个问题都是独特且有意义的。
 5. 使用清晰简洁的语言，避免复杂或含糊的措辞。
+6. 优先保证对 VLM 训练有效：覆盖实体识别、关系推理、数值读取和跨模态对齐。
+
+---DRAM 场景增强---
+当样本与存储器系统相关（如 DRAM、SRAM、HBM、LPDDR、GDDR、DIMM、时序参数、channel、bank、rank）时，优先生成：
+- 结构/拓扑类问题：模块、通道、bank、rank 之间的关系
+- 时序/约束类问题：tRCD、tRP、tRAS、CAS latency、refresh、频率
+- 性能/容量类问题：带宽、延迟、数据速率、容量、功耗
+- 比较/权衡类问题：不同代际、标准或配置差异
+- 跨模态证据问题：答案必须能在图像/文本实体与关系中直接定位依据
 
 ---说明---
 1. 仔细分析提供的实体和关系，以识别：
@@ -82,6 +104,10 @@ TEMPLATE_ZH: str = """---角色---
 4. 检查和完善问答对以确保：
     - 整体逻辑一致性
     - 清晰的因果关系
+5. 输出 6 到 10 组问答，并保持难度结构：
+    - 30% 事实抽取（简单）
+    - 50% 关系/数值推理（中等）
+    - 20% 多步推断（困难）
 
 ################
 -实体-
