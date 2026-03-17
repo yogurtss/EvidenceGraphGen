@@ -135,10 +135,15 @@ class VQAGenerator(BaseGenerator):
             if "metadata" not in node_data or not node_data["metadata"]:
                 continue
             try:
-                metadata = json.loads(node_data["metadata"]).get("metadata", {})
+                raw_metadata = json.loads(node_data["metadata"])
             except (json.JSONDecodeError, TypeError):
                 continue
-            img_path = metadata.get("path", "")
+            metadata = (
+                raw_metadata.get("metadata", {})
+                if isinstance(raw_metadata.get("metadata"), dict)
+                else raw_metadata
+            )
+            img_path = metadata.get("img_path") or metadata.get("path", "")
             if img_path:
                 return img_path
         return ""
@@ -187,28 +192,36 @@ class VQAGenerator(BaseGenerator):
         answer = result.get("answer", "")
         img_path = result.get("img_path", "")
         if output_data_format == "Alpaca":
-            return {
+            result = {
                 "instruction": question,
                 "input": "",
                 "output": answer,
-                "image": img_path,
             }
+            if img_path:
+                result["image"] = img_path
+            return result
         if output_data_format == "Sharegpt":
+            user_value = [{"text": question}]
+            if img_path:
+                user_value[0]["image"] = img_path
             return {
                 "conversations": [
                     {
                         "from": "human",
-                        "value": [{"text": question, "image": img_path}],
+                        "value": user_value,
                     },
                     {"from": "gpt", "value": [{"text": answer}]},
                 ]
             }
         if output_data_format == "ChatML":
+            user_content = [{"text": question}]
+            if img_path:
+                user_content[0]["image"] = img_path
             return {
                 "messages": [
                     {
                         "role": "user",
-                        "content": [{"text": question, "image": img_path}],
+                        "content": user_content,
                     },
                     {
                         "role": "assistant",

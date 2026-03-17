@@ -49,6 +49,7 @@ class TreeConstructService(BaseOperator):
                     "level": level,
                     "content": component.get("content", ""),
                     "node_type": component.get("type", "text"),
+                    "metadata": dict(component.get("metadata", {})),
                     "children": {},
                 }
 

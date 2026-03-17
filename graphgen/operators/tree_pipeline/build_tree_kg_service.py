@@ -51,7 +51,10 @@ class BuildTreeKGService(BaseOperator):
     @staticmethod
     def _inject_tree_context(chunk: Chunk) -> Chunk:
         metadata = dict(chunk.metadata or {})
-        path = metadata.get("metadata", {}).get("path") if isinstance(metadata.get("metadata"), dict) else metadata.get("path")
+        nested_metadata = (
+            metadata.get("metadata") if isinstance(metadata.get("metadata"), dict) else {}
+        )
+        path = nested_metadata.get("path") or metadata.get("path")
         if not path:
             return chunk
 

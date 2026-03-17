@@ -28,28 +28,35 @@ class TreeChunkService(BaseOperator):
             source_trace_id: Optional[str] = doc.get("source_trace_id")
             for node in doc.get("tree_nodes", []):
                 content = node.get("content", "")
-                if not content:
+                node_type = node.get("node_type", "text")
+                if not content and node_type == "text":
                     continue
-                language = detect_main_language(content)
-                chunks = split_chunks(
-                    content,
-                    language=language,
-                    chunk_size=self.chunk_size,
-                    chunk_overlap=self.chunk_overlap,
-                )
+                node_metadata = dict(node.get("metadata", {}))
+                language = detect_main_language(content) if content else "en"
+                if node_type == "text":
+                    chunks = split_chunks(
+                        content,
+                        language=language,
+                        chunk_size=self.chunk_size,
+                        chunk_overlap=self.chunk_overlap,
+                    )
+                else:
+                    chunks = [content]
                 for chunk_text in chunks:
+                    metadata = {
+                        "language": language,
+                        "length": len(chunk_text),
+                        "path": node.get("path", "root"),
+                        "level": node.get("level", 1),
+                        "node_id": node.get("node_id"),
+                        "parent_id": node.get("parent_id"),
+                        "source_trace_id": source_trace_id,
+                    }
+                    metadata.update(node_metadata)
                     row = {
                         "content": chunk_text,
-                        "type": node.get("node_type", "text"),
-                        "metadata": {
-                            "language": language,
-                            "length": len(chunk_text),
-                            "path": node.get("path", "root"),
-                            "level": node.get("level", 1),
-                            "node_id": node.get("node_id"),
-                            "parent_id": node.get("parent_id"),
-                            "source_trace_id": source_trace_id,
-                        },
+                        "type": node_type,
+                        "metadata": metadata,
                     }
                     row["_trace_id"] = self.get_trace_id(row)
                     results.append(row)

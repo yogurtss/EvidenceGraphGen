@@ -1,6 +1,6 @@
 import random
 from collections import deque
-from typing import Any, Iterable, List, Literal, Set, Tuple
+from typing import Any, Iterable, List, Set, Tuple
 
 from graphgen.bases import BaseGraphStorage
 from graphgen.bases.datatypes import Community
@@ -23,11 +23,14 @@ class AnchorBFSPartitioner(BFSPartitioner):
     def __init__(
         self,
         *,
-        anchor_type: Literal["image"] = "image",
+        anchor_type: str | List[str] = "image",
         anchor_ids: Set[str] | None = None,
     ) -> None:
         super().__init__()
-        self.anchor_type = anchor_type
+        if isinstance(anchor_type, str):
+            self.anchor_types = [it.strip().lower() for it in anchor_type.split(",") if it.strip()]
+        else:
+            self.anchor_types = [str(it).strip().lower() for it in anchor_type if str(it).strip()]
         self.anchor_ids = anchor_ids
 
     def partition(
@@ -67,7 +70,7 @@ class AnchorBFSPartitioner(BFSPartitioner):
         anchor_ids: Set[str] = set()
         for node_id, meta in nodes:
             node_type = str(meta.get("entity_type", "")).lower()
-            if self.anchor_type.lower() in node_type:
+            if any(anchor_type in node_type for anchor_type in self.anchor_types):
                 anchor_ids.add(node_id)
         return anchor_ids
 

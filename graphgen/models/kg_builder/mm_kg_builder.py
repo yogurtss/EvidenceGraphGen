@@ -1,3 +1,4 @@
+import json
 import re
 from collections import defaultdict
 from typing import Dict, List, Tuple
@@ -16,6 +17,35 @@ from .light_rag_kg_builder import LightRAGKGBuilder
 
 
 class MMKGBuilder(LightRAGKGBuilder):
+    @staticmethod
+    def _resolve_payload(chunk: Chunk) -> dict:
+        metadata = dict(chunk.metadata or {})
+        payload = {}
+
+        nested = metadata.get("metadata")
+        if isinstance(nested, dict):
+            payload.update(nested)
+
+        content = chunk.content
+        if isinstance(content, dict):
+            payload.update(content)
+        elif isinstance(content, str):
+            stripped = content.strip()
+            if stripped.startswith("{") and stripped.endswith("}"):
+                try:
+                    parsed = json.loads(stripped)
+                except Exception:  # pylint: disable=broad-except
+                    parsed = None
+                if isinstance(parsed, dict):
+                    payload.update(parsed)
+
+        for key, value in metadata.items():
+            if key == "metadata":
+                continue
+            payload.setdefault(key, value)
+
+        return payload
+
     async def extract(
         self, chunk: Chunk
     ) -> Tuple[Dict[str, List[dict]], Dict[Tuple[str, str], List[dict]]]:
@@ -31,11 +61,11 @@ class MMKGBuilder(LightRAGKGBuilder):
         """
         chunk_id = chunk.id
         chunk_type = chunk.type  # image | table | formula | ...
-        metadata = chunk.metadata
+        metadata = self._resolve_payload(chunk)
 
         # choose different extraction strategies based on chunk type
         if chunk_type == "image":
-            image_caption = "\n".join(metadata.get("image_caption", ""))
+            image_caption = "\n".join(metadata.get("image_caption", []))
             language = detect_main_language(image_caption)
             prompt_template = MMKG_EXTRACTION_PROMPT[language].format(
                 **MMKG_EXTRACTION_PROMPT["FORMAT"],
@@ -45,8 +75,6 @@ class MMKGBuilder(LightRAGKGBuilder):
             )
             result = await self.llm_client.generate_answer(prompt_template)
             logger.debug("Image chunk extraction result: %s", result)
-
-            # parse the result
             records = split_string_by_multi_markers(
                 result,
                 [
@@ -71,7 +99,7 @@ class MMKGBuilder(LightRAGKGBuilder):
                 entity = await handle_single_entity_extraction(attributes, chunk_id)
                 if entity is not None:
                     if entity["entity_type"] == "IMAGE":
-                        entity["metadata"] = chunk.metadata
+                        entity["metadata"] = metadata
                     nodes[entity["entity_name"]].append(entity)
                     continue
 
@@ -85,7 +113,57 @@ class MMKGBuilder(LightRAGKGBuilder):
             return dict(nodes), dict(edges)
 
         if chunk_type == "table":
-            pass  # TODO: implement table-based entity and relationship extraction
+            table_caption = "\n".join(metadata.get("table_caption", []))
+            table_body = metadata.get("table_body", "")
+            table_text = "\n\n".join(
+                part for part in [table_caption, table_body] if str(part).strip()
+            )
+            language = detect_main_language(table_text or chunk.content)
+            prompt_template = MMKG_EXTRACTION_PROMPT[language].format(
+                **MMKG_EXTRACTION_PROMPT["FORMAT"],
+                chunk_type=chunk_type,
+                chunk_id=chunk_id,
+                chunk_text=table_text or chunk.content,
+            )
+            result = await self.llm_client.generate_answer(prompt_template)
+            logger.debug("Table chunk extraction result: %s", result)
+
+            records = split_string_by_multi_markers(
+                result,
+                [
+                    MMKG_EXTRACTION_PROMPT["FORMAT"]["record_delimiter"],
+                    MMKG_EXTRACTION_PROMPT["FORMAT"]["completion_delimiter"],
+                ],
+            )
+
+            nodes = defaultdict(list)
+            edges = defaultdict(list)
+
+            for record in records:
+                match = re.search(r"\((.*)\)", record)
+                if not match:
+                    continue
+                inner = match.group(1)
+
+                attributes = split_string_by_multi_markers(
+                    inner, [MMKG_EXTRACTION_PROMPT["FORMAT"]["tuple_delimiter"]]
+                )
+
+                entity = await handle_single_entity_extraction(attributes, chunk_id)
+                if entity is not None:
+                    if entity["entity_type"] == "TABLE":
+                        entity["metadata"] = metadata
+                    nodes[entity["entity_name"]].append(entity)
+                    continue
+
+                relation = await handle_single_relationship_extraction(
+                    attributes, chunk_id
+                )
+                if relation is not None:
+                    key = (relation["src_id"], relation["tgt_id"])
+                    edges[key].append(relation)
+
+            return dict(nodes), dict(edges)
         if chunk_type == "formula":
             pass  # TODO: implement formula-based entity and relationship extraction
 
