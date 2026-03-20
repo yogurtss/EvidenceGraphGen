@@ -18,6 +18,7 @@ pyyaml
 langcodes
 requests
 fastapi
+uvicorn
 trafilatura
 aiohttp
 socksio
