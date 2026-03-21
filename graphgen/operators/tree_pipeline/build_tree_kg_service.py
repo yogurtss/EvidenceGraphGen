@@ -53,6 +53,34 @@ class BuildTreeKGService(BaseOperator):
         self.validate_evidence_in_source: bool = _to_bool(
             self.build_kwargs.get("validate_evidence_in_source", False)
         )
+        self.text_require_entity_evidence: bool = _to_bool(
+            self.build_kwargs.get(
+                "text_require_entity_evidence", self.require_entity_evidence
+            )
+        )
+        self.mm_require_entity_evidence: bool = _to_bool(
+            self.build_kwargs.get("mm_require_entity_evidence", False)
+        )
+        self.text_require_relation_evidence: bool = _to_bool(
+            self.build_kwargs.get(
+                "text_require_relation_evidence", self.require_relation_evidence
+            )
+        )
+        self.mm_require_relation_evidence: bool = _to_bool(
+            self.build_kwargs.get(
+                "mm_require_relation_evidence", self.require_relation_evidence
+            )
+        )
+        self.text_validate_evidence_in_source: bool = _to_bool(
+            self.build_kwargs.get(
+                "text_validate_evidence_in_source", self.validate_evidence_in_source
+            )
+        )
+        self.mm_validate_evidence_in_source: bool = _to_bool(
+            self.build_kwargs.get(
+                "mm_validate_evidence_in_source", self.validate_evidence_in_source
+            )
+        )
 
     @staticmethod
     def _inject_tree_context(chunk: Chunk) -> Chunk:
@@ -92,9 +120,9 @@ class BuildTreeKGService(BaseOperator):
                 chunks=text_chunks,
                 max_loop=self.max_loop,
                 relation_confidence_threshold=self.relation_confidence_threshold,
-                require_entity_evidence=self.require_entity_evidence,
-                require_relation_evidence=self.require_relation_evidence,
-                validate_evidence_in_source=self.validate_evidence_in_source,
+                require_entity_evidence=self.text_require_entity_evidence,
+                require_relation_evidence=self.text_require_relation_evidence,
+                validate_evidence_in_source=self.text_validate_evidence_in_source,
             )
             nodes += text_nodes
             edges += text_edges
@@ -108,9 +136,9 @@ class BuildTreeKGService(BaseOperator):
                 kg_instance=self.graph_storage,
                 chunks=mm_chunks,
                 relation_confidence_threshold=self.relation_confidence_threshold,
-                require_entity_evidence=self.require_entity_evidence,
-                require_relation_evidence=self.require_relation_evidence,
-                validate_evidence_in_source=self.validate_evidence_in_source,
+                require_entity_evidence=self.mm_require_entity_evidence,
+                require_relation_evidence=self.mm_require_relation_evidence,
+                validate_evidence_in_source=self.mm_validate_evidence_in_source,
             )
             nodes += mm_nodes
             edges += mm_edges

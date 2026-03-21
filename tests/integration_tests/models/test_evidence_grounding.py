@@ -1,9 +1,13 @@
 import asyncio
 import logging
+from unittest.mock import patch
 
 from graphgen.bases.datatypes import Chunk
 from graphgen.models.generator.vqa_generator import VQAGenerator
+from graphgen.models.kg_builder.mm_kg_builder import MMKGBuilder
 from graphgen.models.kg_builder.light_rag_kg_builder import LightRAGKGBuilder
+from graphgen.operators.build_kg.build_kg_service import BuildKGService
+from graphgen.operators.tree_pipeline import BuildGroundedTreeKGService
 from graphgen.utils.log import CURRENT_LOGGER_VAR
 
 
@@ -20,6 +24,11 @@ class _DummyLLM:
 
     async def generate_answer(self, *args, **kwargs):
         return self.responses.pop(0)
+
+
+class _DummyGraphStorage:
+    def index_done_callback(self):
+        return None
 
 
 def test_light_rag_filters_entities_and_relations_without_grounded_evidence():
@@ -121,3 +130,111 @@ def test_vqa_generator_keeps_short_qa_when_other_quality_checks_pass():
             "img_path": "demo.png",
         }
     ]
+
+
+def test_mm_kg_builder_accepts_entity_records_without_evidence():
+    llm = _DummyLLM(
+        [
+            (
+                '("entity"<|>"image-1"<|>"image"<|>"A microscopy image of treated tissue.")##'
+                '("entity"<|>"Tissue"<|>"component"<|>"Tissue highlighted in the image.")##'
+                '("relationship"<|>"image-1"<|>"Tissue"<|>"contains"<|>"The image contains tissue."<|>"treated tissue"<|>0.9)'
+                "<|COMPLETE|>"
+            )
+        ]
+    )
+    builder = MMKGBuilder(
+        llm_client=llm,
+        require_entity_evidence=False,
+        require_relation_evidence=True,
+        validate_evidence_in_source=True,
+    )
+
+    nodes, edges = asyncio.run(
+        builder.extract(
+            Chunk(
+                id="image-1",
+                type="image",
+                content="",
+                metadata={"image_caption": ["Figure 1 shows treated tissue."]},
+            )
+        )
+    )
+
+    assert set(nodes.keys()) == {"IMAGE-1", "TISSUE"}
+    assert nodes["IMAGE-1"][0]["evidence_span"] == ""
+    assert nodes["TISSUE"][0]["evidence_span"] == ""
+    assert ("IMAGE-1", "TISSUE") in edges
+
+
+def test_build_grounded_tree_kg_service_splits_text_and_mm_entity_evidence_policy(tmp_path):
+    with patch(
+        "graphgen.operators.tree_pipeline.build_tree_kg_service.init_llm",
+        return_value=_DummyLLM([]),
+    ), patch(
+        "graphgen.operators.tree_pipeline.build_tree_kg_service.init_storage",
+        return_value=_DummyGraphStorage(),
+    ):
+        service = BuildGroundedTreeKGService(
+            working_dir=str(tmp_path / "cache"),
+            kv_backend="json_kv",
+            graph_backend="networkx",
+        )
+
+    assert service.text_require_entity_evidence is True
+    assert service.mm_require_entity_evidence is False
+    assert service.text_require_relation_evidence is True
+    assert service.mm_require_relation_evidence is True
+    assert service.text_validate_evidence_in_source is True
+    assert service.mm_validate_evidence_in_source is True
+
+
+def test_build_kg_service_uses_split_evidence_settings_for_text_and_mm(tmp_path):
+    captured = {}
+
+    def _fake_text_kg(**kwargs):
+        captured["text"] = kwargs
+        return [], []
+
+    def _fake_mm_kg(**kwargs):
+        captured["mm"] = kwargs
+        return [], []
+
+    with patch(
+        "graphgen.operators.build_kg.build_kg_service.init_llm",
+        return_value=_DummyLLM([]),
+    ), patch(
+        "graphgen.operators.build_kg.build_kg_service.init_storage",
+        return_value=_DummyGraphStorage(),
+    ), patch(
+        "graphgen.operators.build_kg.build_kg_service.build_text_kg",
+        side_effect=_fake_text_kg,
+    ), patch(
+        "graphgen.operators.build_kg.build_kg_service.build_mm_kg",
+        side_effect=_fake_mm_kg,
+    ):
+        service = BuildKGService(
+            working_dir=str(tmp_path / "cache"),
+            require_entity_evidence=True,
+            require_relation_evidence=True,
+            validate_evidence_in_source=True,
+            mm_require_entity_evidence=False,
+        )
+        service.process(
+            [
+                {"_trace_id": "text-1", "type": "text", "content": "Alpha", "metadata": {}},
+                {
+                    "_trace_id": "image-1",
+                    "type": "image",
+                    "content": "",
+                    "metadata": {"image_caption": ["Figure 1 shows Alpha."]},
+                },
+            ]
+        )
+
+    assert captured["text"]["require_entity_evidence"] is True
+    assert captured["text"]["require_relation_evidence"] is True
+    assert captured["text"]["validate_evidence_in_source"] is True
+    assert captured["mm"]["require_entity_evidence"] is False
+    assert captured["mm"]["require_relation_evidence"] is True
+    assert captured["mm"]["validate_evidence_in_source"] is True

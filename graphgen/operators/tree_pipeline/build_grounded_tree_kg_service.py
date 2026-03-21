@@ -15,6 +15,12 @@ class BuildGroundedTreeKGService(BuildTreeKGService):
             "require_entity_evidence": True,
             "require_relation_evidence": True,
             "validate_evidence_in_source": True,
+            "text_require_entity_evidence": True,
+            "mm_require_entity_evidence": False,
+            "text_require_relation_evidence": True,
+            "mm_require_relation_evidence": True,
+            "text_validate_evidence_in_source": True,
+            "mm_validate_evidence_in_source": True,
         }
         grounded_kwargs.update(build_kwargs)
         super().__init__(
