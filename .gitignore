@@ -176,6 +176,7 @@ cython_debug/
 cache
 *.pyc
 *.html
+!data_platform/frontend/index.html
 .gradio
 
 # macOS

@@ -32,7 +32,7 @@ function GraphCanvas(props: {
       return;
     }
 
-    const elements = buildGraphElements(subGraph.nodes, subGraph.edges || []);
+    const elements = buildGraphElements(subGraph.nodes, subGraph.edges || [], props.sample?.image_path);
     const cy = cytoscape({
       container: containerRef.current,
       elements,
@@ -45,8 +45,8 @@ function GraphCanvas(props: {
             "background-color": "data(color)",
             color: "#f7f3ea",
             "text-wrap": "wrap",
-            "text-max-width": 110,
-            "font-size": 11,
+            "text-max-width": 92,
+            "font-size": 9,
             "text-valign": "center",
             "text-halign": "center",
             width: 36,
@@ -58,17 +58,19 @@ function GraphCanvas(props: {
         {
           selector: "edge",
           style: {
-            width: 2,
+            width: 1.75,
             label: "data(label)",
             "curve-style": "bezier",
             "target-arrow-shape": "triangle",
             "line-color": "#89a8b2",
             "target-arrow-color": "#89a8b2",
             color: "#f2efe5",
-            "font-size": 10,
+            "font-size": 8,
+            "text-wrap": "wrap",
+            "text-max-width": 110,
             "text-background-color": "#20333a",
             "text-background-opacity": 0.9,
-            "text-background-padding": 3,
+            "text-background-padding": 2,
           },
         },
         {
@@ -88,7 +90,7 @@ function GraphCanvas(props: {
       props.onSelect({
         kind: "node",
         id: target.id(),
-        label: target.data("label") as string,
+        label: (target.data("fullLabel") || target.data("label")) as string,
         entityType: target.data("entityType") as string | undefined,
         description: target.data("description") as string | undefined,
         evidenceSpan: target.data("evidenceSpan") as string | undefined,
@@ -101,7 +103,7 @@ function GraphCanvas(props: {
       props.onSelect({
         kind: "edge",
         id: target.id(),
-        label: target.data("label") as string,
+        label: (target.data("fullLabel") || target.data("label")) as string,
         relationType: target.data("relationType") as string | undefined,
         description: target.data("description") as string | undefined,
         evidenceSpan: target.data("evidenceSpan") as string | undefined,
@@ -488,15 +490,25 @@ export default function App() {
   );
 }
 
-function buildGraphElements(nodes: GraphNodeRecord[], edges: GraphEdgeRecord[]) {
+function buildGraphElements(
+  nodes: GraphNodeRecord[],
+  edges: GraphEdgeRecord[],
+  sampleImagePath?: string | null,
+) {
   const elements: cytoscape.ElementDefinition[] = [];
+  const nodeLabels = new Map<string, string>();
 
   for (const [nodeId, metadata] of nodes) {
     const entityType = String(metadata["entity_type"] || "unknown");
+    const fullLabel = buildNodeLabel(nodeId, metadata, sampleImagePath);
+    const displayLabel = truncateLabel(fullLabel, entityType === "IMAGE" ? 28 : 34);
+    nodeLabels.set(nodeId, fullLabel);
+
     elements.push({
       data: {
         id: nodeId,
-        label: metadata["entity_name"] || nodeId,
+        label: displayLabel,
+        fullLabel,
         entityType,
         description: metadata["description"] || "",
         evidenceSpan: metadata["evidence_span"] || "",
@@ -507,13 +519,20 @@ function buildGraphElements(nodes: GraphNodeRecord[], edges: GraphEdgeRecord[]) 
   }
 
   edges.forEach(([src, tgt, metadata], index) => {
+    const fullLabel = buildEdgeLabel(src, tgt, metadata, nodeLabels);
     elements.push({
       data: {
         id: `${src}-${tgt}-${index}`,
         source: src,
         target: tgt,
-        label: metadata["relation_type"] || `${src} -> ${tgt}`,
-        relationType: metadata["relation_type"] || "",
+        label: truncateLabel(fullLabel, 24),
+        fullLabel,
+        relationType: coerceText(
+          metadata["relation"] ||
+            metadata["relation_type"] ||
+            metadata["predicate"] ||
+            metadata["edge_type"],
+        ),
         description: metadata["description"] || "",
         evidenceSpan: metadata["evidence_span"] || "",
         sourceId: metadata["source_id"] || "",
@@ -540,4 +559,91 @@ function colorForEntityType(entityType: string) {
     hash = entityType.charCodeAt(index) + ((hash << 5) - hash);
   }
   return palette[Math.abs(hash) % palette.length];
+}
+
+function buildNodeLabel(
+  nodeId: string,
+  metadata: Record<string, unknown>,
+  sampleImagePath?: string | null,
+) {
+  const entityType = coerceText(metadata["entity_type"]).toUpperCase();
+  const imageName = extractImageName(metadata, nodeId, sampleImagePath);
+  if (entityType === "IMAGE" && imageName) {
+    return imageName;
+  }
+
+  return (
+    coerceText(metadata["entity_name"]) ||
+    imageName ||
+    coerceText(metadata["name"]) ||
+    coerceText(metadata["label"]) ||
+    nodeId
+  );
+}
+
+function buildEdgeLabel(
+  src: string,
+  tgt: string,
+  metadata: Record<string, unknown>,
+  nodeLabels: Map<string, string>,
+) {
+  const relation =
+    coerceText(metadata["relation"]) ||
+    coerceText(metadata["relation_type"]) ||
+    coerceText(metadata["predicate"]) ||
+    coerceText(metadata["edge_type"]) ||
+    coerceText(metadata["label"]);
+
+  if (relation) {
+    return relation;
+  }
+
+  const srcLabel = nodeLabels.get(src) || src;
+  const tgtLabel = nodeLabels.get(tgt) || tgt;
+  return `${truncateLabel(srcLabel, 18)} -> ${truncateLabel(tgtLabel, 18)}`;
+}
+
+function extractImageName(
+  metadata: Record<string, unknown>,
+  fallback: string,
+  sampleImagePath?: string | null,
+) {
+  const candidates = [
+    metadata["image_name"],
+    metadata["image_file"],
+    metadata["image_path"],
+    metadata["asset_path"],
+    metadata["uri"],
+    metadata["source_id"],
+    metadata["entity_name"],
+    metadata["description"],
+    sampleImagePath,
+    fallback,
+  ];
+
+  for (const candidate of candidates) {
+    const text = coerceText(candidate);
+    if (!text) {
+      continue;
+    }
+
+    const match = text.match(/([^/\\]+(?:\.(?:png|jpe?g|webp|bmp|gif|svg)))$/i);
+    if (match) {
+      return match[1];
+    }
+  }
+
+  return "";
+}
+
+function coerceText(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function truncateLabel(label: string, maxLength: number) {
+  const normalized = label.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, maxLength - 1))}…`;
 }
