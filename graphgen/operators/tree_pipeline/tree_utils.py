@@ -103,6 +103,18 @@ def _is_table_caption(line: str) -> bool:
     return bool(re.match(r"^(table|tab\.?)\s*\d+[\.:]?\s+", stripped, re.IGNORECASE))
 
 
+def _is_image_caption(line: str) -> bool:
+    stripped = (line or "").strip()
+    return bool(
+        re.match(
+            r"^(figure|fig\.?|image|img\.?)\s*\d+[\.:]?\s+",
+            stripped,
+            re.IGNORECASE,
+        )
+        or re.match(r"^图\s*\d+[\.:：]?\s*", stripped)
+    )
+
+
 def _is_image_line(line: str) -> bool:
     stripped = (line or "").strip()
     return bool(
@@ -174,32 +186,33 @@ def _build_image_content(caption_lines: List[str], note_text: str) -> str:
 
 def _consume_trailing_image_lines(lines: List[str], start_idx: int) -> Tuple[int, List[str], List[str]]:
     idx = start_idx
-    caption_lines: List[str] = []
-    note_lines: List[str] = []
-    blank_seen = False
+    block_end = start_idx
+    candidate_lines: List[str] = []
 
     while idx < len(lines):
         raw_line = lines[idx]
         stripped = raw_line.strip()
 
-        if not stripped:
-            blank_seen = True
-            idx += 1
-            continue
-
         if is_title_line(stripped) or _is_image_line(stripped) or stripped.lower().startswith("<table"):
             break
 
-        if blank_seen and caption_lines:
-            break
-
-        if re.match(r"^(note|notes?)\s*[:\-]", stripped, re.IGNORECASE):
-            note_lines.append(stripped)
-        else:
-            caption_lines.append(stripped)
+        candidate_lines.append(raw_line)
+        block_end = idx + 1
         idx += 1
 
-    return idx, caption_lines, note_lines
+    caption_start = None
+    for pos, raw_line in enumerate(candidate_lines):
+        if _is_image_caption(raw_line):
+            caption_start = pos
+            break
+
+    if caption_start is None:
+        return start_idx, [], []
+
+    note_lines = [line.strip() for line in candidate_lines[:caption_start] if line.strip()]
+    caption_lines = [line.strip() for line in candidate_lines[caption_start:] if line.strip()]
+
+    return block_end, caption_lines, note_lines
 
 
 def _parse_markdown_components(content: str) -> List[Dict[str, Any]]:
