@@ -1,9 +1,18 @@
 export type EvidenceItem = {
+  id: string;
   kind: "node" | "edge";
+  graph_item_id?: string | null;
   label: string;
   evidence_span: string;
   source_id?: string | null;
   description?: string | null;
+};
+
+export type SourceContext = {
+  source_id: string;
+  title: string;
+  content: string;
+  content_type: "text" | "image_caption" | "table" | "unknown";
 };
 
 export type RunStats = {
@@ -12,6 +21,8 @@ export type RunStats = {
   entity_type_counts: Record<string, number>;
   relation_type_counts: Record<string, number>;
   evidence_coverage: number;
+  invalid_graph_sample_count: number;
+  invalid_graph_edge_count: number;
 };
 
 export type ImportedRun = {
@@ -59,6 +70,7 @@ export type SampleDetail = {
     edge_pairs?: string[];
   } | null;
   evidence_items: EvidenceItem[];
+  source_contexts: SourceContext[];
   raw_record: Record<string, unknown>;
   graph_parse_error?: string | null;
 };
@@ -74,9 +86,12 @@ export type GraphSelection = {
   kind: "node" | "edge";
   id: string;
   label: string;
+  title: string;
   entityType?: string;
   relationType?: string;
   description?: string;
   evidenceSpan?: string;
   sourceId?: string;
+  metadata?: Array<{ key: string; value: string }>;
+  connectedTo?: string;
 };

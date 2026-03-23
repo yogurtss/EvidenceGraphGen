@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="420" viewBox="0 0 720 420">
+  <rect width="720" height="420" rx="36" fill="#f3f5f8" />
+  <rect x="42" y="42" width="636" height="336" rx="28" fill="#ffffff" stroke="#cfd7e3" />
+  <text x="72" y="100" fill="#3b4c63" font-family="Arial, sans-serif" font-size="34">
+    Assay Overview
+  </text>
+  <rect x="76" y="138" width="240" height="168" rx="22" fill="#dfe8f6" />
+  <rect x="344" y="138" width="300" height="168" rx="22" fill="#d9eef0" />
+  <text x="120" y="226" fill="#4f6781" font-family="Arial, sans-serif" font-size="28">
+    Control
+  </text>
+  <text x="438" y="226" fill="#3c6a6f" font-family="Arial, sans-serif" font-size="28">
+    Treated
+  </text>
+  <text x="76" y="348" fill="#73839b" font-family="Arial, sans-serif" font-size="22">
+    Mock illustration for data platform preview
+  </text>
+</svg>

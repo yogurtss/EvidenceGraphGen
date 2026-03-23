@@ -34,6 +34,10 @@ def scan_imports(request: ScanRequest) -> ScanResponse:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Unexpected scan failure for {request.root_path}: {exc}"
+        ) from exc
 
     return ScanResponse(
         root_path=request.root_path,

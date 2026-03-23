@@ -6,11 +6,20 @@ from pydantic import BaseModel, Field
 
 
 class EvidenceItem(BaseModel):
+    id: str
     kind: Literal["node", "edge"]
+    graph_item_id: str | None = None
     label: str
     evidence_span: str
     source_id: str | None = None
     description: str | None = None
+
+
+class SourceContext(BaseModel):
+    source_id: str
+    title: str
+    content: str
+    content_type: Literal["text", "image_caption", "table", "unknown"] = "unknown"
 
 
 class RunStats(BaseModel):
@@ -19,6 +28,8 @@ class RunStats(BaseModel):
     entity_type_counts: dict[str, int] = Field(default_factory=dict)
     relation_type_counts: dict[str, int] = Field(default_factory=dict)
     evidence_coverage: float = 0.0
+    invalid_graph_sample_count: int = 0
+    invalid_graph_edge_count: int = 0
 
 
 class RunRecord(BaseModel):
@@ -55,6 +66,7 @@ class SampleRecord(BaseModel):
     sub_graph: dict[str, Any] | None = None
     sub_graph_summary: dict[str, Any] | None = None
     evidence_items: list[EvidenceItem] = Field(default_factory=list)
+    source_contexts: list[SourceContext] = Field(default_factory=list)
     raw_record: dict[str, Any]
     graph_parse_error: str | None = None
 

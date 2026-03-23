@@ -1,0 +1,4 @@
+nodes:
+  - id: generate
+    params:
+      method: vqa

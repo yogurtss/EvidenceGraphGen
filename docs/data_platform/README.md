@@ -68,17 +68,19 @@
 前端页面结构：
 
 - 左栏：run 列表和目录导入
-- 中栏：样本列表、分页、搜索、过滤
-- 右栏：样本详情、图片预览、交互图谱、evidence 列表
+- 次左栏：样本列表、分页、搜索、过滤
+- 主内容区：Question / Answer / 图片预览 / 交互图谱
+- 右侧栏：节点或边的实际内容、evidence 列表、原文高亮
 
 图谱交互能力：
 
 - 节点 / 边点击选中
 - metadata 检视
-- `evidence_span` 展示
+- `evidence_span` 展示与 evidence 联动
 - 缩放、拖拽、fit 视图
 - 按 `entity_type` 做节点颜色区分
 - 显示 `relation_type` 边标签
+- 点击 evidence 时高亮对应原文并联动图元素
 
 ## API 设计
 
@@ -99,6 +101,7 @@
 
 - `GET /api/samples/{sample_id}`
   - 返回样本详情
+  - 包含 `source_contexts`，用于 evidence 原文高亮
 
 - `GET /api/assets?path=...`
   - 返回已索引图片文件
@@ -131,6 +134,9 @@
   - 直接从 `sub_graph.nodes[*].evidence_span`
   - 以及 `sub_graph.edges[*].evidence_span`
   - 聚合为统一列表
+- `source_contexts`
+  - 从 `messages` 中提取原始文本、图片 caption、表格文本
+  - 作为前端 evidence 高亮的统一原文来源
 
 ## 测试与验证
 
@@ -152,6 +158,7 @@
 - `DataPlatformStore().scan("cache")` 已能扫描当前仓库里的真实 `cache`
 - `python -m compileall data_platform/backend` 通过
 - 前后端都已经在本地成功启动并验证过健康检查
+- 附带 `data_platform/mock_cache` 作为前端演示数据
 
 ## 运行方式
 

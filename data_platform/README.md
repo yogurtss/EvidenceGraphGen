@@ -43,4 +43,14 @@ npm run dev
 2. 打开前端页面。
 3. 在左上角导入框输入 GraphGen 输出目录，例如 `cache`。
 4. 导入后选择某个 run。
-5. 在中间栏浏览样本，在右侧查看图片、图谱和 evidence。
+5. 在页面中间查看 Question / Answer / Image / sub_graph。
+6. 在右侧查看 node/edge 实际内容、全部 evidence，以及 evidence 对应的原文高亮。
+
+## Mock 数据
+
+仓库内已附带一组可直接预览的测试数据：
+
+- 目录：`data_platform/mock_cache`
+- 默认前端导入路径也会指向这份 mock 数据
+
+如果你还没有自己的 `cache` 输出，可以直接启动前后端后立即浏览这组示例。

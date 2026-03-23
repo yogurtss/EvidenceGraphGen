@@ -28,7 +28,14 @@ nodes:
         "messages": [
             {
                 "role": "user",
-                "content": [{"text": "What does the graph show?"}, {"image": str(image_path)}],
+                "content": [
+                    {"text": "What does the graph show?"},
+                    {
+                        "type": "image",
+                        "image": str(image_path),
+                        "image_caption": ["Figure caption with caption span and grounded relation."],
+                    },
+                ],
             },
             {
                 "role": "assistant",
@@ -45,7 +52,7 @@ nodes:
                             "entity_name": "NODE_A",
                             "description": "An image anchor",
                             "evidence_span": "caption span",
-                            "source_id": "chunk-1",
+                            "source_id": "context-2",
                         },
                     ]
                 ],
@@ -57,7 +64,6 @@ nodes:
                             "relation_type": "supports",
                             "description": "A grounded relation",
                             "evidence_span": "edge span",
-                            "source_id": "chunk-2",
                         },
                     ]
                 ],
@@ -119,6 +125,15 @@ def test_scan_list_and_detail_endpoints(tmp_path: Path):
     assert detail_payload["sub_graph_summary"]["node_count"] == 1
     assert len(detail_payload["evidence_items"]) == 2
     assert detail_payload["image_path"].endswith("demo.png")
+    assert len(detail_payload["source_contexts"]) == 3
+    assert detail_payload["source_contexts"][0]["content"] == "What does the graph show?"
+    assert detail_payload["source_contexts"][1]["content_type"] == "image_caption"
+    assert detail_payload["source_contexts"][1]["content"] == (
+        "Figure caption with caption span and grounded relation."
+    )
+    assert detail_payload["evidence_items"][0]["id"] == "node-1-NODE_A"
+    assert detail_payload["evidence_items"][0]["graph_item_id"] == "NODE_A"
+    assert detail_payload["evidence_items"][1]["source_id"] == "context-1"
 
 
 def test_invalid_graph_is_preserved_without_breaking_browse(tmp_path: Path):
@@ -138,6 +153,7 @@ def test_invalid_graph_is_preserved_without_breaking_browse(tmp_path: Path):
     assert payload["question"] == "Second question"
     assert payload["sub_graph"] is None
     assert payload["graph_parse_error"]
+    assert payload["source_contexts"][0]["source_id"] == "context-1"
 
 
 def test_assets_endpoint_allows_only_indexed_paths(tmp_path: Path):
