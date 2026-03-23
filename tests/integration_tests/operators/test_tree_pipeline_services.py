@@ -179,6 +179,26 @@ def test_normalize_components_keeps_captionless_modalities():
     assert components[2]["metadata"]["image_caption"] == []
 
 
+def test_normalize_components_keeps_plain_text_when_image_has_no_caption():
+    components = normalize_components(
+        {
+            "type": "text",
+            "content": (
+                "## Section\n"
+                "![Img](demo.png)\n"
+                "This line should remain plain text.\n"
+                "Another plain text line.\n"
+                "### Next\n"
+            ),
+        }
+    )
+
+    assert [component["type"] for component in components] == ["section", "image", "text", "section"]
+    assert components[1]["metadata"]["image_caption"] == []
+    assert components[1]["metadata"]["note_text"] == ""
+    assert components[2]["content"] == "This line should remain plain text.\nAnother plain text line."
+
+
 def test_normalize_components_preserves_empty_sections_and_nested_headings():
     components = normalize_components(
         {
