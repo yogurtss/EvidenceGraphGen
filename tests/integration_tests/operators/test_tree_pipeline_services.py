@@ -199,6 +199,32 @@ def test_normalize_components_keeps_plain_text_when_image_has_no_caption():
     assert components[2]["content"] == "This line should remain plain text.\nAnother plain text line."
 
 
+def test_normalize_components_splits_text_blocks_into_paragraphs():
+    components = normalize_components(
+        {
+            "type": "text",
+            "content": (
+                "## Section\n"
+                "Paragraph one line one.\n"
+                "Paragraph one line two.\n"
+                "\n"
+                "Paragraph two.\n"
+                "\n"
+                "Paragraph three line one.\n"
+                "Paragraph three line two.\n"
+            ),
+        }
+    )
+
+    assert [component["type"] for component in components] == ["section", "text", "text", "text"]
+    assert [component["content"] for component in components[1:]] == [
+        "Paragraph one line one.\nParagraph one line two.",
+        "Paragraph two.",
+        "Paragraph three line one.\nParagraph three line two.",
+    ]
+    assert all(component["title"] == "## Section" for component in components[1:])
+
+
 def test_normalize_components_preserves_empty_sections_and_nested_headings():
     components = normalize_components(
         {

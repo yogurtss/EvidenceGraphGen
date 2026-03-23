@@ -69,6 +69,33 @@ def _make_text_component(title: str, lines: List[str]) -> Dict[str, Any]:
     }
 
 
+def _split_text_lines_into_paragraphs(lines: List[str]) -> List[List[str]]:
+    paragraphs: List[List[str]] = []
+    current_paragraph: List[str] = []
+
+    for line in lines:
+        if line.strip():
+            current_paragraph.append(line)
+            continue
+
+        if current_paragraph:
+            paragraphs.append(current_paragraph)
+            current_paragraph = []
+
+    if current_paragraph:
+        paragraphs.append(current_paragraph)
+
+    return paragraphs
+
+
+def _make_text_components(title: str, lines: List[str]) -> List[Dict[str, Any]]:
+    return [
+        _make_text_component(title, paragraph_lines)
+        for paragraph_lines in _split_text_lines_into_paragraphs(lines)
+        if compact_text("\n".join(paragraph_lines))
+    ]
+
+
 def _make_section_component(title: str) -> Dict[str, Any]:
     return {
         "type": "section",
@@ -224,8 +251,7 @@ def _parse_markdown_components(content: str) -> List[Dict[str, Any]]:
 
     def flush_text_buffer() -> None:
         nonlocal current_buffer
-        if compact_text("\n".join(current_buffer)):
-            components.append(_make_text_component(current_title, current_buffer))
+        components.extend(_make_text_components(current_title, current_buffer))
         current_buffer = []
 
     while idx < len(lines):
