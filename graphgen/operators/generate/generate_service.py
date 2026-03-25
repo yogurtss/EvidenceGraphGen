@@ -52,6 +52,10 @@ class GenerateService(BaseOperator):
             from graphgen.models import VQAGenerator
 
             self.generator = VQAGenerator(self.llm_client)
+        elif self.method == "aggregated_vqa":
+            from graphgen.models import AggregatedVQAGenerator
+
+            self.generator = AggregatedVQAGenerator(self.llm_client)
         elif self.method == "multi_choice":
             from graphgen.models import MultiChoiceGenerator
 

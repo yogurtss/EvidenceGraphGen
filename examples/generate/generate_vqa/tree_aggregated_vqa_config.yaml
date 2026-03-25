@@ -47,19 +47,16 @@ nodes:
       - tree_chunk
 
   - id: partition
-    op_name: aggregated_vqa_partition
+    op_name: partition
     type: aggregate
     dependencies:
       - build_grounded_tree_kg
     params:
-      anchor_type:
-        - image
-      max_units_per_community: 12
-      min_units_per_community: 6
-      section_scoped: true
-      required_modalities:
-        - image
-        - text
+      method: anchor_bfs
+      method_params:
+        anchor_type:
+          - image
+        max_units_per_community: 12
 
   - id: generate
     op_name: generate
@@ -68,5 +65,5 @@ nodes:
       - partition
     save_output: true
     params:
-      method: vqa
+      method: aggregated_vqa
       data_format: ChatML
