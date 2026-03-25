@@ -29,7 +29,8 @@ partition -> sample_subgraph -> generate(method=auto)
 
 `sample_subgraph` first recovers the modality-local core extracted from the image/table chunk itself,
 then searches the fused global KG under a size budget for higher-value bridge/support/comparison/conclusion
-extensions. It emits a single best subgraph plus `task_type` for downstream generation.
+extensions. It emits a single best subgraph plus `task_type` for downstream generation through
+`AggregatedVQAGenerator` or `MultiHopVQAGenerator`.
 
 ### 3) Quality controls already enabled
 - Prompt-level constraints for DRAM/VQA reasoning (structure, timing, performance, comparison, grounding).

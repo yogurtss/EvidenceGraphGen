@@ -45,6 +45,10 @@ class GenerateService(BaseOperator):
             from graphgen.models import MultiHopGenerator
 
             self.generator = MultiHopGenerator(self.llm_client)
+        elif self.method == "multi_hop_vqa":
+            from graphgen.models import MultiHopVQAGenerator
+
+            self.generator = MultiHopVQAGenerator(self.llm_client)
         elif self.method == "cot":
             from graphgen.models import CoTGenerator
 
@@ -59,15 +63,15 @@ class GenerateService(BaseOperator):
             self.generator = AggregatedVQAGenerator(self.llm_client)
         elif self.method == "auto":
             from graphgen.models import (
-                AggregatedGenerator,
-                MultiHopGenerator,
+                AggregatedVQAGenerator,
+                MultiHopVQAGenerator,
                 VQAGenerator,
             )
 
             self.generator = None
             self.generator_map = {
-                "aggregated": AggregatedGenerator(self.llm_client),
-                "multi_hop": MultiHopGenerator(self.llm_client),
+                "aggregated": AggregatedVQAGenerator(self.llm_client),
+                "multi_hop": MultiHopVQAGenerator(self.llm_client),
                 "vqa": VQAGenerator(self.llm_client),
             }
         elif self.method == "multi_choice":

@@ -37,3 +37,14 @@ class MultiHopGenerator(BaseGenerator):
         logger.debug("Question: %s", question)
         logger.debug("Answer: %s", answer)
         return [{"question": question, "answer": answer}]
+
+    async def generate(
+        self,
+        batch: tuple[
+            list[tuple[str, dict]], list[tuple[Any, Any, dict] | tuple[Any, Any, Any]]
+        ],
+    ) -> list[dict]:
+        """Text-only multi-hop generation without image injection."""
+        prompt = self.build_prompt(batch)
+        response = await self.llm_client.generate_answer(prompt)
+        return self.parse_response(response)

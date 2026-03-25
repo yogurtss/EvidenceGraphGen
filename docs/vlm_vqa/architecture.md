@@ -302,18 +302,19 @@ method_params:
 - `Sharegpt`
 - `ChatML`
 
-`VQAGenerator` 重写了这层格式化逻辑，使用户消息里可以带图片字段，因此它是当前唯一能稳定产出“带 image 指针”的下游样本格式的模式。
+`VQAGenerator` 重写了这层格式化逻辑，使用户消息里可以带图片字段。现在 `AggregatedVQAGenerator` 和 `MultiHopVQAGenerator` 也复用了这类多模态输出能力，用于 image/table 驱动的聚合与多跳样本。
 
 ## 7. 当前代码里“multihop / aggregated / atomic VQA”到底意味着什么
 
-从命名上看，容易把 `atomic`、`aggregated`、`multi_hop` 理解成 VQA 的三个子类，但当前实现并不是这样。
+从命名上看，容易把 `atomic`、`aggregated`、`multi_hop` 理解成 VQA 的三个子类。当前实现里，这件事已经部分成立，但不是完全对称。
 
 更准确的说法是：
 
 - `atomic`、`aggregated`、`multi_hop` 是三种 QA 生成方式。
 - `vqa` 是单独的一种多模态 QA 生成方式。
+- 同时，`aggregated` 和 `multi_hop` 现在各自有了显式的 VQA 版本：`AggregatedVQAGenerator`、`MultiHopVQAGenerator`。
 - tree pipeline 和 anchor partition 可以让前三者拿到更像 VQA 的多模态局部上下文。
-- 但只要 generator 仍然是 `AtomicGenerator` / `AggregatedGenerator` / `MultiHopGenerator`，输出里就不会自动拥有 `img_path` 注入、多题生成和 VQA 专用过滤。
+- 但只要 generator 仍然是 `AtomicGenerator` / `AggregatedGenerator` / `MultiHopGenerator`，输出里就不会自动拥有 `img_path` 注入和多模态输出格式；这部分需要对应的 VQA 版本来承担。
 
 所以当前仓库里严格说：
 
@@ -321,7 +322,8 @@ method_params:
 - 有 `aggregated QA`
 - 有 `multi_hop QA`
 - 有 `VQA`
-- 但还没有显式独立实现的 `atomic VQA` / `aggregated VQA` / `multi_hop VQA` generator
+- 有显式独立实现的 `aggregated VQA` / `multi_hop VQA`
+- 仍然还没有显式独立实现的 `atomic VQA` generator
 
 现有的 tree atomic 更接近：
 

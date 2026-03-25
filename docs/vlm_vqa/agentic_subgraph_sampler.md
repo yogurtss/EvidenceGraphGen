@@ -52,7 +52,7 @@ read
 - `sample_subgraph`
   - 在融合图上围绕这个 seed 做受控扩展和价值选择
 - `generate(method=auto)`
-  - 根据 sampler 输出的 `task_type`，自动走 `AggregatedGenerator` 或 `MultiHopGenerator`
+  - 根据 sampler 输出的 `task_type`，自动走 `AggregatedVQAGenerator` 或 `MultiHopVQAGenerator`
 
 换句话说，`partition` 不再承担“最终上下文选择器”的职责，真正决定最终子图的是 `sample_subgraph`。
 
@@ -423,8 +423,8 @@ training_value
 行为是：
 
 1. 看输入 batch 里的 `task_type`
-2. 若是 `aggregated`，调用 `AggregatedGenerator`
-3. 若是 `multi_hop`，调用 `MultiHopGenerator`
+2. 若是 `aggregated`，调用 `AggregatedVQAGenerator`
+3. 若是 `multi_hop`，调用 `MultiHopVQAGenerator`
 4. 若缺省，则默认回退到 `aggregated`
 
 同时会把这些 sampler 元信息一起写进输出：
