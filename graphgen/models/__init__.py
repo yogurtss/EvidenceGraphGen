@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from .filter import RangeFilter
     from .generator import (
         AggregatedGenerator,
+        AggregatedVQAGenerator,
         AtomicGenerator,
         CoTGenerator,
         FillInBlankGenerator,
@@ -65,6 +66,7 @@ _import_map = {
     "RangeFilter": ".filter",
     # Generator
     "AggregatedGenerator": ".generator",
+    "AggregatedVQAGenerator": ".generator",
     "AtomicGenerator": ".generator",
     "CoTGenerator": ".generator",
     "FillInBlankGenerator": ".generator",

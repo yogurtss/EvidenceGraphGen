@@ -1,4 +1,5 @@
 from .aggregated_generator import AggregatedGenerator
+from .aggregated_vqa_generator import AggregatedVQAGenerator
 from .atomic_generator import AtomicGenerator
 from .cot_generator import CoTGenerator
 from .fill_in_blank_generator import FillInBlankGenerator
