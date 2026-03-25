@@ -34,7 +34,7 @@ class HierarchyGenerateService(BaseOperator):
                 "type": doc.get("type", "component_pack"),
                 "source_trace_id": doc.get("source_trace_id", ""),
                 "components": leveled_components,
-                "metadata": doc.get("metadata", {}),
+                "meta_data": doc.get("meta_data", {}),
             }
             result["_trace_id"] = self.get_trace_id(result)
             results.append(result)

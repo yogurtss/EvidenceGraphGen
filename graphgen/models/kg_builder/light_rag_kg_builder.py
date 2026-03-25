@@ -178,12 +178,12 @@ class LightRAGKGBuilder(BaseKGBuilder):
         }
 
         if entity_type in ("IMAGE", "TABLE", "FORMULA"):
-            metadata = next(
-                (dp["metadata"] for dp in node_data if dp.get("metadata")), None
+            meta_data = next(
+                (dp["meta_data"] for dp in node_data if dp.get("meta_data")), None
             )
-            if metadata:
-                node_data_dict["metadata"] = json.dumps(
-                    metadata, ensure_ascii=False, default=str
+            if meta_data:
+                node_data_dict["meta_data"] = json.dumps(
+                    meta_data, ensure_ascii=False, default=str
                 )
 
         kg_instance.upsert_node(entity_name, node_data=node_data_dict)

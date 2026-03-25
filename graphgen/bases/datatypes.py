@@ -2,23 +2,34 @@ import math
 from dataclasses import dataclass, field
 from typing import List, Union
 
-from pydantic import BaseModel, Field, field_validator
+try:
+    from pydantic import BaseModel, Field, field_validator
+
+    def compat_field_validator(*fields):
+        return field_validator(*fields)
+
+except ImportError:  # pragma: no cover - pydantic v1 compatibility
+    from pydantic import BaseModel, Field, validator
+
+    def compat_field_validator(*fields):
+        return validator(*fields, allow_reuse=True)
 
 
 @dataclass
 class Chunk:
-    id: str
-    content: str
-    type: str
-    metadata: dict = field(default_factory=dict)
+    id: str = ""
+    content: str = ""
+    type: str = "text"
+    meta_data: dict = field(default_factory=dict)
 
     @staticmethod
     def from_dict(key: str, data: dict) -> "Chunk":
+        raw_meta_data = data.get("meta_data", {})
         return Chunk(
             id=key,
             content=data.get("content", ""),
             type=data.get("type", "text"),
-            metadata={k: v for k, v in data.items() if k != "content"},
+            meta_data=dict(raw_meta_data) if isinstance(raw_meta_data, dict) else {},
         )
 
 
@@ -56,7 +67,7 @@ class Community:
     id: Union[int, str]
     nodes: List[str] = field(default_factory=list)
     edges: List[tuple] = field(default_factory=list)
-    metadata: dict = field(default_factory=dict)
+    meta_data: dict = field(default_factory=dict)
 
 
 class Node(BaseModel):
@@ -78,7 +89,7 @@ class Node(BaseModel):
     )
 
     @classmethod
-    @field_validator("type")
+    @compat_field_validator("type")
     def validate_type(cls, v: str) -> str:
         valid_types = {"map", "filter", "flatmap", "aggregate", "map_batch"}
         if v not in valid_types:
@@ -91,13 +102,13 @@ class Config(BaseModel):
         default_factory=dict, description="global context for the computation graph"
     )
 
-    nodes: List[Node] = Field(
-        ..., min_length=1, description="list of nodes in the computation graph"
-    )
+    nodes: List[Node] = Field(..., description="list of nodes in the computation graph")
 
     @classmethod
-    @field_validator("nodes")
-    def validate_unique_ids(cls, v: List[Node]) -> List[Node]:
+    @compat_field_validator("nodes")
+    def validate_nodes(cls, v: List[Node]) -> List[Node]:
+        if not v:
+            raise ValueError("At least one node is required in the computation graph.")
         ids = [node.id for node in v]
         if len(ids) != len(set(ids)):
             duplicates = {id_ for id_ in ids if ids.count(id_) > 1}

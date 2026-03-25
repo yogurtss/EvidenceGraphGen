@@ -54,7 +54,7 @@ def _build_graph(storage: NetworkXStorage):
             "entity_type": "TABLE",
             "entity_name": "table_seed",
             "description": "DDR timing comparison table",
-            "metadata": '{"table_caption":["Table 1. DDR timing comparison."],"source_trace_id":"doc1-table"}',
+            "meta_data": '{"table_caption":["Table 1. DDR timing comparison."],"source_trace_id":"doc1-table"}',
             "source_id": "doc1-table<SEP>doc1-text",
             "evidence_span": "Table 1. DDR timing comparison.",
         },

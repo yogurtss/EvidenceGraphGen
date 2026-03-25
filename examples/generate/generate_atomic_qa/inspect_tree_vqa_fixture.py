@@ -33,11 +33,11 @@ def main() -> None:
 
     print("components:")
     for component in structure_rows[0]["components"]:
-        print(component["type"], component.get("title"), component.get("metadata", {}))
+        print(component["type"], component.get("title"), component.get("meta_data", {}))
 
     print("\nchunks:")
     for row in chunk_rows:
-        print(row["type"], row["metadata"])
+        print(row["type"], row["meta_data"])
 
 
 if __name__ == "__main__":

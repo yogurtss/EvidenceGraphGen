@@ -2,7 +2,7 @@ from typing import Tuple
 
 from graphgen.bases import BaseOperator
 
-from .tree_utils import merge_metadata, normalize_components
+from .tree_utils import merge_meta_data, normalize_components
 
 
 class StructureAnalyzeService(BaseOperator):
@@ -27,7 +27,7 @@ class StructureAnalyzeService(BaseOperator):
                 "type": "component_pack",
                 "source_trace_id": source_trace_id,
                 "components": components,
-                "metadata": merge_metadata(
+                "meta_data": merge_meta_data(
                     doc,
                     {
                         "source_type": doc.get("type", "text"),

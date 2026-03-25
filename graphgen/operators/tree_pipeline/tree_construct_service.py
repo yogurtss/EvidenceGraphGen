@@ -67,7 +67,7 @@ class TreeConstructService(BaseOperator):
                     "level": level,
                     "content": component.get("content", ""),
                     "node_type": node_type,
-                    "metadata": dict(component.get("metadata", {})),
+                    "meta_data": dict(component.get("meta_data", {})),
                     "children": {},
                 }
 
@@ -92,7 +92,7 @@ class TreeConstructService(BaseOperator):
                 "source_trace_id": doc.get("source_trace_id", ""),
                 "tree": root,
                 "tree_nodes": ordered_nodes,
-                "metadata": doc.get("metadata", {}),
+                "meta_data": doc.get("meta_data", {}),
             }
             result["_trace_id"] = self.get_trace_id(result)
             results.append(result)

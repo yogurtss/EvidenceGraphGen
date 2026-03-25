@@ -82,35 +82,29 @@ class AggregatedVQAPartitioner(AnchorBFSPartitioner):
             yield Community(id=seed_node, nodes=comm_n, edges=comm_e)
 
     @staticmethod
-    def _extract_metadata(node_meta: dict) -> dict:
-        raw_metadata = node_meta.get("metadata")
-        if isinstance(raw_metadata, dict):
-            nested = raw_metadata.get("metadata")
-            if isinstance(nested, dict):
-                return {**raw_metadata, **nested}
-            return raw_metadata
-        if isinstance(raw_metadata, str):
+    def _extract_meta_data(node_meta: dict) -> dict:
+        raw_meta_data = node_meta.get("meta_data")
+        if isinstance(raw_meta_data, dict):
+            return raw_meta_data
+        if isinstance(raw_meta_data, str):
             try:
-                parsed = json.loads(raw_metadata)
+                parsed = json.loads(raw_meta_data)
             except (TypeError, json.JSONDecodeError):
                 return {}
             if isinstance(parsed, dict):
-                nested = parsed.get("metadata")
-                if isinstance(nested, dict):
-                    return {**parsed, **nested}
                 return parsed
         return {}
 
     @classmethod
     def _get_section_path(cls, node_meta: dict) -> str:
-        metadata = cls._extract_metadata(node_meta)
-        path = metadata.get("path") or node_meta.get("path")
+        meta_data = cls._extract_meta_data(node_meta)
+        path = meta_data.get("path") or node_meta.get("path")
         if not path:
             return ""
         return str(path).strip()
 
-    @staticmethod
-    def _normalize_modality(node_meta: dict) -> str:
+    @classmethod
+    def _normalize_modality(cls, node_meta: dict) -> str:
         entity_type = str(node_meta.get("entity_type", "")).lower()
         if "image" in entity_type:
             return "image"
@@ -121,9 +115,9 @@ class AggregatedVQAPartitioner(AnchorBFSPartitioner):
         if entity_type:
             return "text"
 
-        metadata = node_meta.get("metadata")
-        if isinstance(metadata, dict):
-            modality = str(metadata.get("modality", "")).lower()
+        meta_data = cls._extract_meta_data(node_meta)
+        if meta_data:
+            modality = str(meta_data.get("modality", "")).lower()
             if modality:
                 return modality
         return "text"

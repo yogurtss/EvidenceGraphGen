@@ -55,12 +55,16 @@ nodes:
     dependencies:
       - build_grounded_tree_kg
     params:
-      method: anchor_bfs
+      method: aggregated_vqa_anchor_bfs
       method_params:
         anchor_type:
           - image
           - table
         max_units_per_community: 6
+        min_units_per_community: 6
+        section_scoped: true
+        required_modalities:
+          - text
 
   - id: sample_subgraph
     op_name: sample_subgraph

@@ -1,4 +1,3 @@
-import json
 import re
 from typing import Any
 
@@ -115,12 +114,11 @@ class VQAGenerator(BaseGenerator):
         :return: QA pairs
         """
         prompt = self.build_prompt(batch)
-        image_path = self.extract_image_path(batch)
+        image_path = self.extract_visual_asset_path(batch)
         response = await self.llm_client.generate_answer(
             prompt, image_path=image_path or None
         )
         qa_pairs = self.parse_response(response)  # generate one or more QA pairs
-        nodes, _ = batch
         context_keywords = self._build_context_keywords(batch)
         seen_pairs = set()
         filtered_pairs = [
@@ -138,53 +136,12 @@ class VQAGenerator(BaseGenerator):
                 len(qa_pairs),
             )
 
-        img_path = image_path
-        for qa in filtered_pairs:
-            qa["img_path"] = img_path
+        if image_path:
+            for qa in filtered_pairs:
+                qa["img_path"] = image_path
 
         return filtered_pairs
 
     @staticmethod
     def format_generation_results(result: dict, output_data_format: str) -> dict:
-        question = result.get("question", "")
-        answer = result.get("answer", "")
-        img_path = result.get("img_path", "")
-        if output_data_format == "Alpaca":
-            result = {
-                "instruction": question,
-                "input": "",
-                "output": answer,
-            }
-            if img_path:
-                result["image"] = img_path
-            return result
-        if output_data_format == "Sharegpt":
-            user_value = [{"text": question}]
-            if img_path:
-                user_value[0]["image"] = img_path
-            return {
-                "conversations": [
-                    {
-                        "from": "human",
-                        "value": user_value,
-                    },
-                    {"from": "gpt", "value": [{"text": answer}]},
-                ]
-            }
-        if output_data_format == "ChatML":
-            user_content = [{"text": question}]
-            if img_path:
-                user_content[0]["image"] = img_path
-            return {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": user_content,
-                    },
-                    {
-                        "role": "assistant",
-                        "content": [{"type": "text", "text": answer}],
-                    },
-                ]
-            }
-        raise ValueError(f"Unknown output data format: {output_data_format}")
+        return BaseGenerator.format_vqa_generation_results(result, output_data_format)

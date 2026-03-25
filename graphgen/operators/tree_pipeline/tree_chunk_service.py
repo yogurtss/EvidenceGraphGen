@@ -43,7 +43,7 @@ class TreeChunkService(BaseOperator):
                     continue
                 if not content and node_type == "text":
                     continue
-                node_metadata = dict(node.get("metadata", {}))
+                node_meta_data = dict(node.get("meta_data", {}))
                 language = detect_main_language(content) if content else "en"
                 if node_type == "text" and self.split_text_nodes:
                     chunks = split_chunks(
@@ -55,7 +55,7 @@ class TreeChunkService(BaseOperator):
                 else:
                     chunks = [content]
                 for chunk_text in chunks:
-                    metadata = {
+                    meta_data = {
                         "language": language,
                         "length": len(chunk_text),
                         "path": node.get("path", "root"),
@@ -64,11 +64,11 @@ class TreeChunkService(BaseOperator):
                         "parent_id": node.get("parent_id"),
                         "source_trace_id": source_trace_id,
                     }
-                    metadata.update(node_metadata)
+                    meta_data.update(node_meta_data)
                     row = {
                         "content": chunk_text,
                         "type": node_type,
-                        "metadata": metadata,
+                        "meta_data": meta_data,
                     }
                     row["_trace_id"] = self.get_trace_id(row)
                     results.append(row)

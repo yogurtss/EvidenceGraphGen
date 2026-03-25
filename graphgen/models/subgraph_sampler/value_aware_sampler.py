@@ -25,23 +25,16 @@ def _split_source_ids(value: Any) -> set[str]:
     }
 
 
-def _load_metadata(raw_metadata: Any) -> dict:
-    if isinstance(raw_metadata, dict):
-        return raw_metadata
-    if not raw_metadata:
+def _load_meta_data(raw_meta_data: Any) -> dict:
+    if isinstance(raw_meta_data, dict):
+        return raw_meta_data
+    if not raw_meta_data:
         return {}
     try:
-        parsed = json.loads(raw_metadata)
+        parsed = json.loads(raw_meta_data)
     except (TypeError, json.JSONDecodeError):
         return {}
-    if not isinstance(parsed, dict):
-        return {}
-    nested = parsed.get("metadata")
-    if isinstance(nested, dict):
-        merged = dict(parsed)
-        merged.update(nested)
-        return merged
-    return parsed
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _normalize_edge_pair(src_id: str, tgt_id: str) -> tuple[str, str]:
@@ -172,6 +165,7 @@ class ValueAwareSubgraphSampler:
         )
 
         selected_nodes = self._node_payloads(best["node_ids"])
+        selected_nodes.sort(key=lambda item: (item[0] != seed_node_id, item[0]))
         selected_edges = self._edge_payloads(best["edge_pairs"])
         local_core_subgraph = self._serialize_subgraph(
             best["local_core_node_ids"], best["local_core_edge_pairs"]
@@ -240,10 +234,15 @@ class ValueAwareSubgraphSampler:
     def _select_seed_node(nodes: list[tuple[str, dict]]) -> str:
         for node_id, node_data in nodes:
             entity_type = str(node_data.get("entity_type", "")).upper()
-            if entity_type in {"IMAGE", "TABLE"}:
+            if "IMAGE" in entity_type or "TABLE" in entity_type:
                 return node_id
-            metadata = _load_metadata(node_data.get("metadata"))
-            if metadata.get("img_path") or metadata.get("table_caption"):
+            meta_data = _load_meta_data(node_data.get("meta_data"))
+            if (
+                meta_data.get("image_path")
+                or meta_data.get("img_path")
+                or meta_data.get("table_img_path")
+                or meta_data.get("table_caption")
+            ):
                 return node_id
         return nodes[0][0] if nodes else ""
 
@@ -255,8 +254,8 @@ class ValueAwareSubgraphSampler:
         for node_id, node_data in nodes:
             if node_id != seed_node_id:
                 continue
-            metadata = _load_metadata(node_data.get("metadata"))
-            seed_chunk_ids.update(_split_source_ids(metadata.get("source_trace_id", "")))
+            meta_data = _load_meta_data(node_data.get("meta_data"))
+            seed_chunk_ids.update(_split_source_ids(meta_data.get("source_trace_id", "")))
             seed_source_ids.update(_split_source_ids(node_data.get("source_id", "")))
             break
         return seed_chunk_ids, seed_source_ids
@@ -316,8 +315,8 @@ class ValueAwareSubgraphSampler:
             return True
         if source_ids & seed_source_ids:
             return True
-        metadata = _load_metadata(payload.get("metadata"))
-        nested_source_ids = _split_source_ids(metadata.get("source_trace_id", ""))
+        meta_data = _load_meta_data(payload.get("meta_data"))
+        nested_source_ids = _split_source_ids(meta_data.get("source_trace_id", ""))
         return bool(nested_source_ids & seed_chunk_ids)
 
     def _propose_extensions(

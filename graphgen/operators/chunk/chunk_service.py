@@ -66,7 +66,7 @@ class ChunkService(BaseOperator):
         Chunk the documents in the batch.
         :return: A tuple of (results, meta_updates)
             results: A list of chunked documents. Each chunked document is a dict with the structure:
-                {"_trace_id": str, "content": str, "type": str,  "metadata": {"length": int, "language": str, ...}
+                {"_trace_id": str, "content": str, "type": str,  "meta_data": {"length": int, "language": str, ...}
             meta_updates: A dict mapping source document IDs to lists of trace IDs for the chunked documents.
         """
         results = []
@@ -84,7 +84,7 @@ class ChunkService(BaseOperator):
                     chunk = {
                         "content": text_chunk,
                         "type": "text",
-                        "metadata": {
+                        "meta_data": {
                             "length": len(self.tokenizer_instance.encode(text_chunk))
                             if self.tokenizer_instance
                             else len(text_chunk),
@@ -102,7 +102,7 @@ class ChunkService(BaseOperator):
                 input_trace_id = data.pop("_trace_id")
                 content = data.pop("content") if "content" in data else ""
                 doc_type = data.pop("type")
-                chunk = {"content": content, "type": doc_type, "metadata": data}
+                chunk = {"content": content, "type": doc_type, "meta_data": data}
                 chunk["_trace_id"] = self.get_trace_id(chunk)
                 results.append(chunk)
                 meta_updates.setdefault(input_trace_id, []).append(chunk["_trace_id"])

@@ -19,12 +19,8 @@ from .light_rag_kg_builder import LightRAGKGBuilder
 class MMKGBuilder(LightRAGKGBuilder):
     @staticmethod
     def _resolve_payload(chunk: Chunk) -> dict:
-        metadata = dict(chunk.metadata or {})
+        meta_data = dict(chunk.meta_data or {})
         payload = {}
-
-        nested = metadata.get("metadata")
-        if isinstance(nested, dict):
-            payload.update(nested)
 
         content = chunk.content
         if isinstance(content, dict):
@@ -39,9 +35,7 @@ class MMKGBuilder(LightRAGKGBuilder):
                 if isinstance(parsed, dict):
                     payload.update(parsed)
 
-        for key, value in metadata.items():
-            if key == "metadata":
-                continue
+        for key, value in meta_data.items():
             payload.setdefault(key, value)
 
         return payload
@@ -61,11 +55,11 @@ class MMKGBuilder(LightRAGKGBuilder):
         """
         chunk_id = chunk.id
         chunk_type = chunk.type  # image | table | formula | ...
-        metadata = self._resolve_payload(chunk)
+        meta_data = self._resolve_payload(chunk)
 
         # choose different extraction strategies based on chunk type
         if chunk_type == "image":
-            image_caption = "\n".join(metadata.get("image_caption", []))
+            image_caption = "\n".join(meta_data.get("image_caption", []))
             language = detect_main_language(image_caption)
             prompt_template = MMKG_EXTRACTION_PROMPT[language].format(
                 **MMKG_EXTRACTION_PROMPT["FORMAT"],
@@ -99,7 +93,7 @@ class MMKGBuilder(LightRAGKGBuilder):
                 entity = await handle_single_entity_extraction(attributes, chunk_id)
                 if entity is not None:
                     if entity["entity_type"] == "IMAGE":
-                        entity["metadata"] = metadata
+                        entity["meta_data"] = meta_data
                     nodes[entity["entity_name"]].append(entity)
                     continue
 
@@ -113,8 +107,8 @@ class MMKGBuilder(LightRAGKGBuilder):
             return dict(nodes), dict(edges)
 
         if chunk_type == "table":
-            table_caption = "\n".join(metadata.get("table_caption", []))
-            table_body = metadata.get("table_body", "")
+            table_caption = "\n".join(meta_data.get("table_caption", []))
+            table_body = meta_data.get("table_body", "")
             table_text = "\n\n".join(
                 part for part in [table_caption, table_body] if str(part).strip()
             )
@@ -152,7 +146,7 @@ class MMKGBuilder(LightRAGKGBuilder):
                 entity = await handle_single_entity_extraction(attributes, chunk_id)
                 if entity is not None:
                     if entity["entity_type"] == "TABLE":
-                        entity["metadata"] = metadata
+                        entity["meta_data"] = meta_data
                     nodes[entity["entity_name"]].append(entity)
                     continue
 
