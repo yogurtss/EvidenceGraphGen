@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from .kg_builder import LightRAGKGBuilder, MMKGBuilder
     from .llm import HTTPClient, OllamaClient, OpenAIClient
     from .partitioner import (
+        AggregatedVQAPartitioner,
         AnchorBFSPartitioner,
         BFSPartitioner,
         DFSPartitioner,
@@ -81,6 +82,7 @@ _import_map = {
     "OllamaClient": ".llm",
     "OpenAIClient": ".llm",
     # Partitioner
+    "AggregatedVQAPartitioner": ".partitioner",
     "AnchorBFSPartitioner": ".partitioner",
     "BFSPartitioner": ".partitioner",
     "DFSPartitioner": ".partitioner",

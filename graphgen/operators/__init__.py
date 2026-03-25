@@ -5,7 +5,7 @@ from .extract import ExtractService
 from .filter import FilterService
 from .generate import GenerateService
 from .judge import JudgeService
-from .partition import PartitionService
+from .partition import AggregatedVQAPartitionService, PartitionService
 from .quiz import QuizService
 from .read import read
 from .rephrase import RephraseService
@@ -28,6 +28,7 @@ operators = {
     "extract": ExtractService,
     "search": SearchService,
     "partition": PartitionService,
+    "aggregated_vqa_partition": AggregatedVQAPartitionService,
     "generate": GenerateService,
     "evaluate": EvaluateService,
     "rephrase": RephraseService,

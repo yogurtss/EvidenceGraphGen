@@ -57,6 +57,15 @@ class PartitionService(BaseOperator):
                 if self.method_params.get("anchor_ids")
                 else None,
             )
+        elif method == "aggregated_vqa_anchor_bfs":
+            from graphgen.models import AggregatedVQAPartitioner
+
+            self.partitioner = AggregatedVQAPartitioner(
+                anchor_type=self.method_params.get("anchor_type", ["image"]),
+                anchor_ids=set(self.method_params.get("anchor_ids", []))
+                if self.method_params.get("anchor_ids")
+                else None,
+            )
         else:
             raise ValueError(f"Unsupported partition method: {method}")
 

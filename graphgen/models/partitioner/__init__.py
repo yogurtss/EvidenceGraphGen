@@ -1,3 +1,4 @@
+from .aggregated_vqa_partitioner import AggregatedVQAPartitioner
 from .anchor_bfs_partitioner import AnchorBFSPartitioner
 from .bfs_partitioner import BFSPartitioner
 from .dfs_partitioner import DFSPartitioner
