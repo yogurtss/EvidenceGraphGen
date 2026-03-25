@@ -1,0 +1,72 @@
+global_params:
+  working_dir: cache
+  graph_backend: kuzu
+  kv_backend: rocksdb
+
+nodes:
+  - id: read
+    op_name: read
+    type: source
+    dependencies: []
+    params:
+      input_path:
+        - tests/fixtures/tree_vqa_demo.md
+
+  - id: structure_analyze
+    op_name: structure_analyze
+    type: map_batch
+    dependencies:
+      - read
+
+  - id: hierarchy_generate
+    op_name: hierarchy_generate
+    type: map_batch
+    dependencies:
+      - structure_analyze
+
+  - id: tree_construct
+    op_name: tree_construct
+    type: map_batch
+    dependencies:
+      - hierarchy_generate
+
+  - id: tree_chunk
+    op_name: tree_chunk
+    type: map_batch
+    dependencies:
+      - tree_construct
+    params:
+      chunk_size: 1024
+      chunk_overlap: 100
+      split_text_nodes: false
+
+  - id: build_grounded_tree_kg
+    op_name: build_grounded_tree_kg
+    type: map_batch
+    dependencies:
+      - tree_chunk
+
+  - id: partition
+    op_name: aggregated_vqa_partition
+    type: aggregate
+    dependencies:
+      - build_grounded_tree_kg
+    params:
+      anchor_type:
+        - image
+      max_units_per_community: 12
+      min_units_per_community: 6
+      section_scoped: true
+      required_modalities:
+        - image
+        - text
+
+  - id: generate
+    op_name: generate
+    type: map_batch
+    dependencies:
+      - partition
+    save_output: true
+    params:
+      method: vqa
+      data_format: ChatML
