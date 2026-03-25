@@ -18,6 +18,19 @@ If your source is structured markdown / MoDora-style content, use `tree_vqa_conf
 This variant runs `structure_analyze -> hierarchy_generate -> tree_construct -> tree_chunk -> build_grounded_tree_kg`
 before partitioning, so image/table VQA samples are grounded by tree-local evidence spans.
 
+### 2.2) Agentic subgraph reasoning
+If you want the system to keep a vision-centered seed and then select a higher-value subgraph for
+`aggregated` or `multi_hop`, use `agentic_subgraph_reasoning_config.yaml`.
+This variant inserts:
+
+```text
+partition -> sample_subgraph -> generate(method=auto)
+```
+
+`sample_subgraph` first recovers the modality-local core extracted from the image/table chunk itself,
+then searches the fused global KG under a size budget for higher-value bridge/support/comparison/conclusion
+extensions. It emits a single best subgraph plus `task_type` for downstream generation.
+
 ### 3) Quality controls already enabled
 - Prompt-level constraints for DRAM/VQA reasoning (structure, timing, performance, comparison, grounding).
 - Post-generation filtering in `VQAGenerator`:
@@ -32,3 +45,5 @@ before partitioning, so image/table VQA samples are grounded by tree-local evide
 
 ### 4) Recommended config tuning
 In `vqa_config.yaml` under `generate.params`, tune the general generation settings such as `data_format`.
+For `agentic_subgraph_reasoning_config.yaml`, the main knobs are `sample_subgraph.params.max_units`,
+`max_steps`, and `max_hops_from_seed`.

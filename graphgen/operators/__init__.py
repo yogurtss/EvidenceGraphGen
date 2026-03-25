@@ -9,6 +9,7 @@ from .partition import AggregatedVQAPartitionService, PartitionService
 from .quiz import QuizService
 from .read import read
 from .rephrase import RephraseService
+from .sample_subgraph import SampleSubgraphService
 from .search import SearchService
 from .tree_pipeline import (
     BuildGroundedTreeKGService,
@@ -33,6 +34,7 @@ operators = {
     "evaluate": EvaluateService,
     "rephrase": RephraseService,
     "filter": FilterService,
+    "sample_subgraph": SampleSubgraphService,
     "structure_analyze": StructureAnalyzeService,
     "hierarchy_generate": HierarchyGenerateService,
     "tree_construct": TreeConstructService,

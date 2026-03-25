@@ -1,5 +1,8 @@
 import asyncio
+import base64
 import math
+import mimetypes
+import os
 from typing import Any, Dict, List, Optional
 
 import aiohttp
@@ -87,7 +90,48 @@ class HTTPClient(BaseLLMWrapper):
         if self._session and not self._session.closed:
             await self._session.close()
 
-    def _build_body(self, text: str, history: List[str]) -> Dict[str, Any]:
+    @staticmethod
+    def _resolve_image_url(image_path: Optional[str]) -> Optional[str]:
+        if not image_path:
+            return None
+        if image_path.startswith(("http://", "https://", "data:")):
+            return image_path
+        if not os.path.exists(image_path):
+            return None
+
+        mime_type, _ = mimetypes.guess_type(image_path)
+        mime_type = mime_type or "application/octet-stream"
+        with open(image_path, "rb") as image_file:
+            encoded = base64.b64encode(image_file.read()).decode("utf-8")
+        return f"data:{mime_type};base64,{encoded}"
+
+    @classmethod
+    def _build_user_content(
+        cls, text: str, image_path: Optional[str] = None
+    ) -> str | list[dict[str, Any]]:
+        image_url = cls._resolve_image_url(image_path)
+        if not image_url:
+            return text
+        return [
+            {"type": "text", "text": text},
+            {"type": "image_url", "image_url": {"url": image_url}},
+        ]
+
+    @staticmethod
+    def _content_to_text(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            text_parts = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text_parts.append(str(item.get("text", "")))
+            return "\n".join(part for part in text_parts if part)
+        return str(content)
+
+    def _build_body(
+        self, text: str, history: List[str], image_path: Optional[str] = None
+    ) -> Dict[str, Any]:
         messages = []
         if self.system_prompt:
             messages.append({"role": "system", "content": self.system_prompt})
@@ -96,7 +140,9 @@ class HTTPClient(BaseLLMWrapper):
         if history and isinstance(history[0], dict):
             messages.extend(history)
 
-        messages.append({"role": "user", "content": text})
+        messages.append(
+            {"role": "user", "content": self._build_user_content(text, image_path)}
+        )
 
         body = {
             "model": self.model_name,
@@ -122,9 +168,10 @@ class HTTPClient(BaseLLMWrapper):
         history: Optional[List[str]] = None,
         **extra: Any,
     ) -> str:
-        body = self._build_body(text, history or [])
+        body = self._build_body(text, history or [], extra.get("image_path"))
         prompt_tokens = sum(
-            len(self.tokenizer.encode(m["content"])) for m in body["messages"]
+            len(self.tokenizer.encode(self._content_to_text(m["content"])))
+            for m in body["messages"]
         )
         est = prompt_tokens + body["max_tokens"]
 
@@ -162,7 +209,7 @@ class HTTPClient(BaseLLMWrapper):
         history: Optional[List[str]] = None,
         **extra: Any,
     ) -> List[Token]:
-        body = self._build_body(text, history or [])
+        body = self._build_body(text, history or [], extra.get("image_path"))
         body["max_tokens"] = 1
         if self.topk_per_token > 0:
             body["logprobs"] = True

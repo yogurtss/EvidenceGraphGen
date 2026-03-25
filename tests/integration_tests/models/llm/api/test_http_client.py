@@ -1,5 +1,6 @@
 # pylint: disable=protected-access
 import math
+from pathlib import Path
 
 import pytest
 
@@ -141,3 +142,18 @@ async def test_generate_topk_per_token_parses_logprobs():
     assert len(tokens[0].top_candidates) == 2
     assert tokens[0].top_candidates[0].text == "A"
     assert tokens[0].top_candidates[1].text == "B"
+
+
+def test_build_body_includes_image_when_image_path_present(tmp_path: Path):
+    image_path = tmp_path / "demo.png"
+    image_path.write_bytes(b"fake-image-bytes")
+
+    client = HTTPClient(model="m", base_url="http://test")
+    body = client._build_body("describe image", [], str(image_path))
+
+    content = body["messages"][-1]["content"]
+    assert isinstance(content, list)
+    assert content[0]["type"] == "text"
+    assert content[0]["text"] == "describe image"
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")

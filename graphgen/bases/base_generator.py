@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import json
 from typing import Any
 
 from graphgen.bases.base_llm_wrapper import BaseLLMWrapper
@@ -24,6 +25,37 @@ class BaseGenerator(ABC):
     def parse_response(response: str) -> list[dict]:
         """Parse the LLM response and return the generated QAs"""
 
+    @staticmethod
+    def extract_image_path(
+        batch: tuple[list[tuple[str, dict]], list[tuple[Any, Any, dict]]]
+    ) -> str:
+        nodes, _ = batch
+        for _, node_data in nodes:
+            raw_metadata = node_data.get("metadata")
+            metadata = {}
+            if isinstance(raw_metadata, dict):
+                metadata = raw_metadata
+            elif raw_metadata:
+                try:
+                    parsed = json.loads(raw_metadata)
+                except (TypeError, json.JSONDecodeError):
+                    parsed = {}
+                if isinstance(parsed, dict):
+                    nested = parsed.get("metadata")
+                    if isinstance(nested, dict):
+                        metadata = {**parsed, **nested}
+                    else:
+                        metadata = parsed
+
+            image_path = (
+                metadata.get("image_path")
+                or metadata.get("img_path")
+                or metadata.get("path")
+            )
+            if image_path:
+                return str(image_path)
+        return ""
+
     async def generate(
         self,
         batch: tuple[
@@ -36,7 +68,10 @@ class BaseGenerator(ABC):
         :return: QA pairs
         """
         prompt = self.build_prompt(batch)
-        response = await self.llm_client.generate_answer(prompt)
+        image_path = self.extract_image_path(batch)
+        response = await self.llm_client.generate_answer(
+            prompt, image_path=image_path or None
+        )
         qa_pairs = self.parse_response(response)  # generate one or more QA pairs
         return qa_pairs
 

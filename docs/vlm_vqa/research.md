@@ -11,6 +11,8 @@
 
 核心结论是：GraphGen 本质上是一套“YAML 配置驱动的 Ray DAG + operator/service + generator/template + storage”的 QA 数据生成框架。配置文件定义执行图，`Engine` 负责调度，`operators` 负责数据变换与建图，`models/generator` 负责把局部图上下文转成具体 QA，KV/图存储负责缓存、血缘追踪与跨阶段复用。
 
+如果你想先看“当前代码整体怎么串起来、`atomic / aggregated / multi_hop / vqa` 之间到底是什么关系”，建议先读 `docs/vlm_vqa/architecture.md`；本文更偏向 VQA、tree VQA 和 tree atomic 的深入拆解。
+
 ## 1. 项目整体架构
 
 ### 1.1 入口链路

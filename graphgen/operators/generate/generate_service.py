@@ -31,6 +31,7 @@ class GenerateService(BaseOperator):
 
         self.method = method
         self.data_format = data_format
+        self.generator_map = {}
 
         if self.method == "atomic":
             from graphgen.models import AtomicGenerator
@@ -56,6 +57,19 @@ class GenerateService(BaseOperator):
             from graphgen.models import AggregatedVQAGenerator
 
             self.generator = AggregatedVQAGenerator(self.llm_client)
+        elif self.method == "auto":
+            from graphgen.models import (
+                AggregatedGenerator,
+                MultiHopGenerator,
+                VQAGenerator,
+            )
+
+            self.generator = None
+            self.generator_map = {
+                "aggregated": AggregatedGenerator(self.llm_client),
+                "multi_hop": MultiHopGenerator(self.llm_client),
+                "vqa": VQAGenerator(self.llm_client),
+            }
         elif self.method == "multi_choice":
             from graphgen.models import MultiChoiceGenerator
 
@@ -92,13 +106,36 @@ class GenerateService(BaseOperator):
         Generate question-answer pairs based on nodes and edges.
         """
         logger.info("[Generation] mode: %s, batches: %d", self.method, len(batch))
-        triples = [(item["nodes"], item["edges"]) for item in batch]
-        results = run_concurrent(
-            self.generator.generate,
-            triples,
-            desc="Generating QAs",
-            unit="batch",
-        )
+        if self.method == "auto":
+            tasks = [
+                (
+                    item.get("task_type", "aggregated"),
+                    (item["nodes"], item["edges"]),
+                )
+                for item in batch
+            ]
+
+            async def _generate_task(task):
+                task_type, triple = task
+                generator = self.generator_map.get(task_type) or self.generator_map[
+                    "aggregated"
+                ]
+                return await generator.generate(triple)
+
+            results = run_concurrent(
+                _generate_task,
+                tasks,
+                desc="Generating QAs",
+                unit="batch",
+            )
+        else:
+            triples = [(item["nodes"], item["edges"]) for item in batch]
+            results = run_concurrent(
+                self.generator.generate,
+                triples,
+                desc="Generating QAs",
+                unit="batch",
+            )
 
         meta_updates = {}
         final_results = []
@@ -114,13 +151,49 @@ class GenerateService(BaseOperator):
                 item.get("nodes", []), item.get("edges", [])
             )
             for qa_pair in qa_pairs:
-                res = self.generator.format_generation_results(
+                formatter = self.generator
+                if self.method == "auto":
+                    formatter = self.generator_map.get(
+                        item.get("task_type", "aggregated"),
+                        self.generator_map["aggregated"],
+                    )
+                res = formatter.format_generation_results(
                     qa_pair, output_data_format=self.data_format
                 )
                 res["sub_graph"] = json.dumps(sub_graph, ensure_ascii=False)
                 res["sub_graph_summary"] = json.dumps(
                     sub_graph_summary, ensure_ascii=False
                 )
+                if item.get("task_type"):
+                    res["task_type"] = item["task_type"]
+                if item.get("seed_node_id"):
+                    res["seed_node_id"] = item["seed_node_id"]
+                if item.get("selection_rationale"):
+                    res["selection_rationale"] = item["selection_rationale"]
+                if item.get("value_breakdown"):
+                    res["value_breakdown"] = json.dumps(
+                        item["value_breakdown"], ensure_ascii=False
+                    )
+                if item.get("subgraph_score") is not None:
+                    res["subgraph_score"] = item["subgraph_score"]
+                if item.get("task_type_reason"):
+                    res["task_type_reason"] = item["task_type_reason"]
+                if item.get("local_core_subgraph"):
+                    res["local_core_subgraph"] = json.dumps(
+                        item["local_core_subgraph"], ensure_ascii=False
+                    )
+                if item.get("extension_subgraph"):
+                    res["extension_subgraph"] = json.dumps(
+                        item["extension_subgraph"], ensure_ascii=False
+                    )
+                if item.get("node_roles"):
+                    res["node_roles"] = json.dumps(
+                        item["node_roles"], ensure_ascii=False
+                    )
+                if item.get("seed_chunk_ids"):
+                    res["seed_chunk_ids"] = json.dumps(
+                        item["seed_chunk_ids"], ensure_ascii=False
+                    )
                 res["_trace_id"] = self.get_trace_id(res)
                 final_results.append(res)
                 meta_updates.setdefault(input_trace_id, []).append(res["_trace_id"])

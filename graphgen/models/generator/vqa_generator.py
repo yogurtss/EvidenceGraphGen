@@ -103,26 +103,6 @@ class VQAGenerator(BaseGenerator):
         seen_pairs.add(normalized_signature)
         return True
 
-    @staticmethod
-    def _extract_img_path(nodes: list[tuple[str, dict]]) -> str:
-        for node in nodes:
-            node_data = node[1]
-            if "metadata" not in node_data or not node_data["metadata"]:
-                continue
-            try:
-                raw_metadata = json.loads(node_data["metadata"])
-            except (json.JSONDecodeError, TypeError):
-                continue
-            metadata = (
-                raw_metadata.get("metadata", {})
-                if isinstance(raw_metadata.get("metadata"), dict)
-                else raw_metadata
-            )
-            img_path = metadata.get("img_path") or metadata.get("path", "")
-            if img_path:
-                return img_path
-        return ""
-
     async def generate(
         self,
         batch: tuple[
@@ -135,7 +115,10 @@ class VQAGenerator(BaseGenerator):
         :return: QA pairs
         """
         prompt = self.build_prompt(batch)
-        response = await self.llm_client.generate_answer(prompt)
+        image_path = self.extract_image_path(batch)
+        response = await self.llm_client.generate_answer(
+            prompt, image_path=image_path or None
+        )
         qa_pairs = self.parse_response(response)  # generate one or more QA pairs
         nodes, _ = batch
         context_keywords = self._build_context_keywords(batch)
@@ -155,7 +138,7 @@ class VQAGenerator(BaseGenerator):
                 len(qa_pairs),
             )
 
-        img_path = self._extract_img_path(nodes)
+        img_path = image_path
         for qa in filtered_pairs:
             qa["img_path"] = img_path
 
