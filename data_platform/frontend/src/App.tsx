@@ -371,7 +371,7 @@ function EvidenceViewer(props: {
                 className="context-tab"
                 onClick={() => setShowAllContextTabs((value) => !value)}
               >
-                <span>{showAllContextTabs ? "Show less" : `+${hiddenContextTabCount} more`}</span>
+                <span>{showAllContextTabs ? "Show hidden" : `+${hiddenContextTabCount} hidden`}</span>
               </button>
             ) : null}
           </div>
@@ -993,7 +993,7 @@ export default function App() {
                               className="source-chip source-chip-toggle"
                               onClick={() => setShowAllSourceIds((value) => !value)}
                             >
-                              {showAllSourceIds ? "Hidden" : `+${hiddenSourceCount} more`}
+                              {showAllSourceIds ? "Show hidden" : `+${hiddenSourceCount} hidden`}
                             </button>
                           ) : null}
                         </div>
