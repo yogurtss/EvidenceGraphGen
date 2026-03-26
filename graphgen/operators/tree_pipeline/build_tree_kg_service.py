@@ -4,7 +4,7 @@ from graphgen.bases import BaseGraphStorage, BaseLLMWrapper, BaseOperator
 from graphgen.bases.datatypes import Chunk
 from graphgen.common.init_llm import init_llm
 from graphgen.common.init_storage import init_storage
-from graphgen.utils import evidence_supported_by_text, logger
+from graphgen.utils import logger
 
 from graphgen.operators.build_kg.build_mm_kg import build_mm_kg
 from graphgen.operators.build_kg.build_text_kg import build_text_kg
@@ -81,9 +81,6 @@ class BuildTreeKGService(BaseOperator):
                 "mm_validate_evidence_in_source", self.validate_evidence_in_source
             )
         )
-        self.filter_text_entities_without_source_evidence: bool = _to_bool(
-            self.build_kwargs.get("filter_text_entities_without_source_evidence", False)
-        )
 
     @staticmethod
     def _inject_tree_context(chunk: Chunk) -> Chunk:
@@ -102,10 +99,9 @@ class BuildTreeKGService(BaseOperator):
 
     def process(self, batch: list) -> Tuple[list, dict]:
         chunks = [Chunk.from_dict(doc["_trace_id"], doc) for doc in batch]
-        text_chunk_content_by_id = {
-            chunk.id: chunk.content for chunk in chunks if chunk.type == "text"
-        }
-        text_chunks = [self._inject_tree_context(chunk) for chunk in chunks if chunk.type == "text"]
+        text_chunks = [
+            self._inject_tree_context(chunk) for chunk in chunks if chunk.type == "text"
+        ]
         mm_chunks = [
             chunk
             for chunk in chunks
@@ -127,19 +123,15 @@ class BuildTreeKGService(BaseOperator):
                 require_relation_evidence=self.text_require_relation_evidence,
                 validate_evidence_in_source=self.text_validate_evidence_in_source,
             )
-            if self.filter_text_entities_without_source_evidence:
-                text_nodes, text_edges = self._filter_text_entities_by_source_evidence(
-                    text_nodes=text_nodes,
-                    text_edges=text_edges,
-                    text_chunk_content_by_id=text_chunk_content_by_id,
-                )
             nodes += text_nodes
             edges += text_edges
         else:
             logger.info("All tree text chunks are already in the storage")
 
         if mm_chunks:
-            logger.info("[Tree Multi-modal Entity and Relation Extraction] processing ...")
+            logger.info(
+                "[Tree Multi-modal Entity and Relation Extraction] processing ..."
+            )
             mm_nodes, mm_edges = build_mm_kg(
                 llm_client=self.llm_client,
                 kg_instance=self.graph_storage,
@@ -175,56 +167,3 @@ class BuildTreeKGService(BaseOperator):
                 meta_updates.setdefault(source_id, []).append(trace_id)
 
         return results, meta_updates
-
-    @staticmethod
-    def _filter_text_entities_by_source_evidence(
-        text_nodes: list,
-        text_edges: list,
-        text_chunk_content_by_id: dict,
-    ) -> Tuple[list, list]:
-        kept_text_nodes = []
-        removed_entity_names = set()
-
-        for node in text_nodes:
-            source_ids = [
-                source_id.strip()
-                for source_id in str(node.get("source_id", "")).split("<SEP>")
-                if source_id.strip()
-            ]
-            source_texts = [
-                text_chunk_content_by_id[source_id]
-                for source_id in source_ids
-                if source_id in text_chunk_content_by_id
-            ]
-            if not source_texts:
-                kept_text_nodes.append(node)
-                continue
-
-            evidence_spans = [
-                evidence_span.strip()
-                for evidence_span in str(node.get("evidence_span", "")).split("<SEP>")
-                if evidence_span.strip()
-            ]
-            if not evidence_spans:
-                kept_text_nodes.append(node)
-                continue
-
-            has_supported_evidence = any(
-                evidence_supported_by_text(evidence_span, source_text)
-                for evidence_span in evidence_spans
-                for source_text in source_texts
-            )
-            if has_supported_evidence:
-                kept_text_nodes.append(node)
-                continue
-
-            removed_entity_names.add(node.get("entity_name"))
-
-        kept_text_edges = [
-            edge
-            for edge in text_edges
-            if edge.get("src_id") not in removed_entity_names
-            and edge.get("tgt_id") not in removed_entity_names
-        ]
-
-        return kept_text_nodes, kept_text_edges

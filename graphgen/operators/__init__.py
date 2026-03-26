@@ -14,6 +14,7 @@ from .search import SearchService
 from .tree_pipeline import (
     BuildGroundedTreeKGService,
     BuildTreeKGService,
+    FilterEntitiesService,
     HierarchyGenerateService,
     StructureAnalyzeService,
     TreeChunkService,
@@ -41,4 +42,5 @@ operators = {
     "tree_chunk": TreeChunkService,
     "build_tree_kg": BuildTreeKGService,
     "build_grounded_tree_kg": BuildGroundedTreeKGService,
+    "filter_entities": FilterEntitiesService,
 }

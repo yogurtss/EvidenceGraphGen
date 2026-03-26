@@ -168,7 +168,9 @@ def test_mm_kg_builder_accepts_entity_records_without_evidence():
     assert ("IMAGE-1", "TISSUE") in edges
 
 
-def test_build_grounded_tree_kg_service_splits_text_and_mm_entity_evidence_policy(tmp_path):
+def test_build_grounded_tree_kg_service_splits_text_and_mm_entity_evidence_policy(
+    tmp_path,
+):
     with patch(
         "graphgen.operators.tree_pipeline.build_tree_kg_service.init_llm",
         return_value=_DummyLLM([]),
@@ -223,7 +225,12 @@ def test_build_kg_service_uses_split_evidence_settings_for_text_and_mm(tmp_path)
         )
         service.process(
             [
-                {"_trace_id": "text-1", "type": "text", "content": "Alpha", "metadata": {}},
+                {
+                    "_trace_id": "text-1",
+                    "type": "text",
+                    "content": "Alpha",
+                    "metadata": {},
+                },
                 {
                     "_trace_id": "image-1",
                     "type": "image",
@@ -239,85 +246,6 @@ def test_build_kg_service_uses_split_evidence_settings_for_text_and_mm(tmp_path)
     assert captured["mm"]["require_entity_evidence"] is False
     assert captured["mm"]["require_relation_evidence"] is True
     assert captured["mm"]["validate_evidence_in_source"] is True
-
-
-def test_build_grounded_tree_kg_service_can_filter_text_entities_without_source_match(
-    tmp_path,
-):
-    def _fake_text_kg(**kwargs):
-        return (
-            [
-                {
-                    "entity_name": "ALPHA",
-                    "description": "Alpha",
-                    "source_id": "text-1",
-                    "evidence_span": "Alpha is in the source text.",
-                },
-                {
-                    "entity_name": "GHOST",
-                    "description": "Ghost",
-                    "source_id": "text-1",
-                    "evidence_span": "This sentence does not exist.",
-                },
-            ],
-            [
-                {
-                    "src_id": "ALPHA",
-                    "tgt_id": "GHOST",
-                    "description": "Unsupported",
-                    "source_id": "text-1",
-                    "evidence_span": "This sentence does not exist.",
-                    "weight": 0.8,
-                    "relation_type": "related_to",
-                    "keywords": "related_to",
-                }
-            ],
-        )
-
-    with patch(
-        "graphgen.operators.tree_pipeline.build_tree_kg_service.init_llm",
-        return_value=_DummyLLM([]),
-    ), patch(
-        "graphgen.operators.tree_pipeline.build_tree_kg_service.init_storage",
-        return_value=_DummyGraphStorage(),
-    ), patch(
-        "graphgen.operators.tree_pipeline.build_tree_kg_service.build_text_kg",
-        side_effect=_fake_text_kg,
-    ):
-        service = BuildGroundedTreeKGService(
-            working_dir=str(tmp_path / "cache"),
-            kv_backend="json_kv",
-            graph_backend="networkx",
-            filter_text_entities_without_source_evidence=True,
-        )
-        token = CURRENT_LOGGER_VAR.set(
-            logging.getLogger("test-grounded-tree-filter")
-        )
-        try:
-            results, _ = service.process(
-                [
-                    {
-                        "_trace_id": "text-1",
-                        "type": "text",
-                        "content": "Alpha is in the source text.",
-                        "metadata": {},
-                    }
-                ]
-            )
-        finally:
-            CURRENT_LOGGER_VAR.reset(token)
-
-    node_names = {
-        item["node"]["entity_name"] for item in results if item.get("node")
-    }
-    edge_pairs = {
-        (item["edge"]["src_id"], item["edge"]["tgt_id"])
-        for item in results
-        if item.get("edge")
-    }
-
-    assert node_names == {"ALPHA"}
-    assert edge_pairs == set()
 
 
 def test_aggregated_vqa_generator_attaches_image_path():
