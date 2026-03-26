@@ -474,8 +474,20 @@ function HighlightedClampText(props: {
   isMatched: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const shouldClamp = props.text.length > 220 || props.text.split("\n").length > 3;
-  const collapsedText = !expanded && props.isMatched ? buildMatchedExcerpt(props.text, props.evidence) : props.text;
+  const chunkPreview = useMemo(() => buildChunkPreview(props.text), [props.text]);
+  const shouldClamp =
+    props.text.length > 220 ||
+    props.text.split("\n").length > 3 ||
+    chunkPreview.truncated;
+  const collapsedText = useMemo(() => {
+    if (expanded) {
+      return props.text;
+    }
+    if (props.isMatched) {
+      return buildMatchedExcerpt(props.text, props.evidence);
+    }
+    return chunkPreview.text;
+  }, [expanded, props.evidence, props.isMatched, props.text, chunkPreview.text]);
 
   useEffect(() => {
     setExpanded(false);
@@ -1457,4 +1469,46 @@ function buildMatchedExcerpt(text: string, evidence: EvidenceItem | null) {
   const suffix = end < text.length ? "..." : "";
 
   return `${prefix}${text.slice(start, end).trim()}${suffix}`;
+}
+
+function buildChunkPreview(text: string, maxChunks = 2, maxChars = 480) {
+  const chunks = text
+    .split(/\n{2,}/)
+    .map((chunk) => chunk.trim())
+    .filter(Boolean);
+
+  if (!chunks.length) {
+    const trimmed = text.trim();
+    if (trimmed.length <= maxChars) {
+      return { text: trimmed, truncated: false };
+    }
+    return { text: `${trimmed.slice(0, maxChars).trim()}...`, truncated: true };
+  }
+
+  const selected: string[] = [];
+  let totalChars = 0;
+  for (let index = 0; index < chunks.length; index += 1) {
+    const chunk = chunks[index];
+    const joinedLength = totalChars + chunk.length + (selected.length ? 2 : 0);
+    if (selected.length >= maxChunks || joinedLength > maxChars) {
+      break;
+    }
+    selected.push(chunk);
+    totalChars = joinedLength;
+  }
+
+  if (!selected.length) {
+    const firstChunk = chunks[0];
+    return {
+      text: `${firstChunk.slice(0, maxChars).trim()}...`,
+      truncated: firstChunk.length > maxChars || chunks.length > 1,
+    };
+  }
+
+  const previewText = selected.join("\n\n");
+  const truncated = selected.length < chunks.length || previewText.length < text.trim().length;
+  return {
+    text: truncated ? `${previewText}...` : previewText,
+    truncated,
+  };
 }
