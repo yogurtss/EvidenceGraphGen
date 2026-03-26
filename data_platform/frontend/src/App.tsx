@@ -993,7 +993,7 @@ export default function App() {
                               className="source-chip source-chip-toggle"
                               onClick={() => setShowAllSourceIds((value) => !value)}
                             >
-                              {showAllSourceIds ? "Show less" : `+${hiddenSourceCount} more`}
+                              {showAllSourceIds ? "Hidden" : `+${hiddenSourceCount} more`}
                             </button>
                           ) : null}
                         </div>
