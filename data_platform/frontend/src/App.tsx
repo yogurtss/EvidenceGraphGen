@@ -303,6 +303,7 @@ function EvidenceViewer(props: {
   activeEvidence: EvidenceItem | null;
   onSelectContext: (sourceId: string) => void;
 }) {
+  const [showAllContextTabs, setShowAllContextTabs] = useState(false);
   const visibleContexts = props.sourceContexts;
   const activeContextId =
     props.focusedContextId ||
@@ -316,6 +317,15 @@ function EvidenceViewer(props: {
   const contextRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const activeContext =
     visibleContexts.find((context) => context.source_id === activeContextId) || visibleContexts[0] || null;
+  const CONTEXT_TAB_VISIBLE_COUNT = 4;
+  const displayedContextTabs = showAllContextTabs
+    ? visibleContexts
+    : visibleContexts.slice(0, CONTEXT_TAB_VISIBLE_COUNT);
+  const hiddenContextTabCount = Math.max(visibleContexts.length - displayedContextTabs.length, 0);
+
+  useEffect(() => {
+    setShowAllContextTabs(false);
+  }, [props.selectedGraphItem?.id, props.activeEvidence?.id, visibleContexts.length]);
 
   useEffect(() => {
     if (!activeContextId) {
@@ -343,7 +353,7 @@ function EvidenceViewer(props: {
         </div>
         {visibleContexts.length > 1 ? (
           <div className="context-switcher">
-            {visibleContexts.map((context, index) => (
+            {displayedContextTabs.map((context, index) => (
               <button
                 key={`switch-${context.source_id}`}
                 type="button"
@@ -355,6 +365,15 @@ function EvidenceViewer(props: {
                 <span>{`Source ${index + 1}`}</span>
               </button>
             ))}
+            {hiddenContextTabCount > 0 ? (
+              <button
+                type="button"
+                className="context-tab"
+                onClick={() => setShowAllContextTabs((value) => !value)}
+              >
+                <span>{showAllContextTabs ? "Show less" : `+${hiddenContextTabCount} more`}</span>
+              </button>
+            ) : null}
           </div>
         ) : null}
         <div className="context-list">
