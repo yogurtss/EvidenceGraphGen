@@ -16,6 +16,7 @@ import type {
 
 const PAGE_SIZE = 5;
 const DEFAULT_ROOT_PATH = "/home/lukashe/data/projects/EvidenceGraphGen/cache";
+const MAX_VISIBLE_SOURCE_IDS = 6;
 
 function GraphCanvas(props: {
   sample: SampleDetail | null;
@@ -504,6 +505,7 @@ export default function App() {
   const [selectedGraphItem, setSelectedGraphItem] = useState<GraphSelection | null>(null);
   const [activeEvidenceId, setActiveEvidenceId] = useState<string | null>(null);
   const [focusedContextId, setFocusedContextId] = useState<string | null>(null);
+  const [showAllSourceIds, setShowAllSourceIds] = useState(false);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [search, setSearch] = useState("");
@@ -611,6 +613,7 @@ export default function App() {
         setSelectedGraphItem(null);
         setActiveEvidenceId(null);
         setFocusedContextId(null);
+        setShowAllSourceIds(false);
       });
     } catch (detailError) {
       setError(detailError instanceof Error ? detailError.message : "Failed to load detail");
@@ -631,6 +634,7 @@ export default function App() {
 
   function handleGraphSelect(selection: GraphSelection | null) {
     setSelectedGraphItem(selection);
+    setShowAllSourceIds(false);
     setFocusedContextId(resolvePrimarySourceId(selection?.sourceId));
     setActiveEvidenceId((current) => {
       if (!selection || !selectedSample) {
@@ -645,6 +649,7 @@ export default function App() {
 
   function handleEvidenceSelect(item: EvidenceItem) {
     setActiveEvidenceId(item.id);
+    setShowAllSourceIds(false);
     setFocusedContextId(resolvePrimarySourceId(item.source_id));
     if (selectedSample && item.graph_item_id) {
       const selection = findGraphSelectionById(selectedSample, item.graph_item_id);
@@ -675,6 +680,15 @@ export default function App() {
       edgeCount: selectedSample.sub_graph_summary?.edge_count || 0,
     };
   }, [selectedSample]);
+  const selectedSourceIds = useMemo(
+    () => splitSourceIds(selectedGraphItem?.sourceId),
+    [selectedGraphItem?.sourceId],
+  );
+  const hiddenSourceCount = Math.max(0, selectedSourceIds.length - MAX_VISIBLE_SOURCE_IDS);
+  const displayedSourceIds =
+    showAllSourceIds || hiddenSourceCount === 0
+      ? selectedSourceIds
+      : selectedSourceIds.slice(0, MAX_VISIBLE_SOURCE_IDS);
 
   return (
     <div className="app-shell">
@@ -928,9 +942,9 @@ export default function App() {
                     </div>
                     <div>
                       <span>Source</span>
-                      {splitSourceIds(selectedGraphItem.sourceId).length ? (
+                      {selectedSourceIds.length ? (
                         <div className="source-chip-list">
-                          {splitSourceIds(selectedGraphItem.sourceId).map((sourceId) => (
+                          {displayedSourceIds.map((sourceId) => (
                             <button
                               key={`${selectedGraphItem.id}-${sourceId}`}
                               type="button"
@@ -942,6 +956,15 @@ export default function App() {
                               {sourceId}
                             </button>
                           ))}
+                          {hiddenSourceCount > 0 ? (
+                            <button
+                              type="button"
+                              className="source-chip source-chip-toggle"
+                              onClick={() => setShowAllSourceIds((value) => !value)}
+                            >
+                              {showAllSourceIds ? "Show less" : `+${hiddenSourceCount} more`}
+                            </button>
+                          ) : null}
                         </div>
                       ) : (
                         <p>-</p>
