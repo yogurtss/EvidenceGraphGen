@@ -25,6 +25,7 @@ class LightRAGKGBuilder(BaseKGBuilder):
         require_entity_evidence: bool = False,
         require_relation_evidence: bool = True,
         validate_evidence_in_source: bool = False,
+        strict_triplet_grounding: bool = False,
     ):
         super().__init__(llm_client)
         self.max_loop = max_loop
@@ -32,6 +33,7 @@ class LightRAGKGBuilder(BaseKGBuilder):
         self.require_entity_evidence = require_entity_evidence
         self.require_relation_evidence = require_relation_evidence
         self.validate_evidence_in_source = validate_evidence_in_source
+        self.strict_triplet_grounding = strict_triplet_grounding
         self.tokenizer = llm_client.tokenizer
 
     async def extract(
@@ -47,9 +49,16 @@ class LightRAGKGBuilder(BaseKGBuilder):
 
         # step 1: language_detection
         language = detect_main_language(content)
+        strict_triplet_guidance = ""
+        if self.strict_triplet_grounding:
+            strict_triplet_guidance = KG_EXTRACTION_PROMPT["STRICT_TRIPLET_GUIDANCE"][
+                language
+            ]
 
         hint_prompt = KG_EXTRACTION_PROMPT[language]["TEMPLATE"].format(
-            **KG_EXTRACTION_PROMPT["FORMAT"], input_text=content
+            **KG_EXTRACTION_PROMPT["FORMAT"],
+            input_text=content,
+            strict_triplet_guidance=strict_triplet_guidance,
         )
 
         # step 2: initial glean
@@ -120,7 +129,44 @@ class LightRAGKGBuilder(BaseKGBuilder):
                 key = (relation["src_id"], relation["tgt_id"])
                 edges[key].append(relation)
 
+        if self.strict_triplet_grounding:
+            grounded_entity_names = {
+                entity_name
+                for entity_name, entity_records in nodes.items()
+                if any(
+                    self._has_grounded_evidence(entity.get("evidence_span", ""), content)
+                    for entity in entity_records
+                )
+            }
+            edges = {
+                key: [
+                    relation
+                    for relation in relation_records
+                    if self._has_grounded_evidence(
+                        relation.get("evidence_span", ""), content
+                    )
+                ]
+                for key, relation_records in edges.items()
+                if key[0] in grounded_entity_names and key[1] in grounded_entity_names
+            }
+            edges = {key: value for key, value in edges.items() if value}
+            matched_entity_names = {
+                entity_name for key in edges for entity_name in key
+            }
+            nodes = {
+                entity_name: entity_records
+                for entity_name, entity_records in nodes.items()
+                if entity_name in matched_entity_names
+            }
+
         return dict(nodes), dict(edges)
+
+    @staticmethod
+    def _has_grounded_evidence(evidence_span: str, source_text: str) -> bool:
+        evidence_span = (evidence_span or "").strip()
+        if not evidence_span:
+            return False
+        return evidence_supported_by_text(evidence_span, source_text)
 
     async def merge_nodes(
         self,

@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from unittest.mock import patch
 
@@ -5,6 +6,7 @@ from graphgen.models.generator.vqa_generator import VQAGenerator
 from graphgen.models.partitioner.anchor_bfs_partitioner import AnchorBFSPartitioner
 from graphgen.operators.tree_pipeline import (
     BuildGroundedTreeKGService,
+    BuildTreeKGService,
     FilterEntitiesService,
     HierarchyGenerateService,
     StructureAnalyzeService,
@@ -462,6 +464,61 @@ def test_build_grounded_tree_kg_service_enables_evidence_checks(tmp_path: Path):
     assert service.require_entity_evidence is True
     assert service.require_relation_evidence is True
     assert service.validate_evidence_in_source is True
+    assert service.text_strict_triplet_grounding is True
+
+
+def test_build_tree_kg_service_forwards_text_strict_triplet_grounding(tmp_path: Path):
+    captured = {}
+
+    class _DummyTokenizer:
+        @staticmethod
+        def count_tokens(text: str) -> int:
+            return len(text.split())
+
+    class _DummyLLM:
+        tokenizer = _DummyTokenizer()
+
+    def _fake_text_kg(**kwargs):
+        captured.update(kwargs)
+        return [], []
+
+    with patch(
+        "graphgen.operators.tree_pipeline.build_tree_kg_service.init_llm",
+        return_value=_DummyLLM(),
+    ), patch(
+        "graphgen.operators.tree_pipeline.build_tree_kg_service.init_storage",
+        return_value=_DummyKV(),
+    ), patch(
+        "graphgen.operators.tree_pipeline.build_tree_kg_service.build_text_kg",
+        side_effect=_fake_text_kg,
+    ), patch(
+        "graphgen.operators.tree_pipeline.build_tree_kg_service.build_mm_kg",
+        return_value=([], []),
+    ):
+        service = BuildTreeKGService(
+            working_dir=str(tmp_path / "cache"),
+            kv_backend="json_kv",
+            graph_backend="networkx",
+            text_strict_triplet_grounding=True,
+        )
+        from graphgen.utils.log import CURRENT_LOGGER_VAR
+
+        token = CURRENT_LOGGER_VAR.set(logging.getLogger("test-build-tree-kg-service"))
+        try:
+            service.process(
+                [
+                    {
+                        "_trace_id": "text-1",
+                        "type": "text",
+                        "content": "Alpha is grounded.",
+                        "metadata": {},
+                    }
+                ]
+            )
+        finally:
+            CURRENT_LOGGER_VAR.reset(token)
+
+    assert captured["strict_triplet_grounding"] is True
 
 
 def test_filter_entities_service_filters_unsupported_nodes_and_edges(tmp_path: Path):

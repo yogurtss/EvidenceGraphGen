@@ -17,6 +17,7 @@ def build_text_kg(
     require_entity_evidence: bool = False,
     require_relation_evidence: bool = True,
     validate_evidence_in_source: bool = False,
+    strict_triplet_grounding: bool = False,
 ) -> tuple:
     """
     :param llm_client: Synthesizer LLM model to extract entities and relationships
@@ -27,6 +28,8 @@ def build_text_kg(
     :param require_entity_evidence: If True, entities without evidence span are dropped
     :param require_relation_evidence: If True, relations without evidence span are dropped
     :param validate_evidence_in_source: If True, evidence spans must be found in the source chunk
+    :param strict_triplet_grounding: If True, keep relations only when src, relation, and tgt
+        are each grounded by evidence in the same source chunk
     :return:
     """
 
@@ -37,6 +40,7 @@ def build_text_kg(
         require_entity_evidence=require_entity_evidence,
         require_relation_evidence=require_relation_evidence,
         validate_evidence_in_source=validate_evidence_in_source,
+        strict_triplet_grounding=strict_triplet_grounding,
     )
 
     results = run_concurrent(

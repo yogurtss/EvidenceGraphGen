@@ -71,6 +71,130 @@ def test_light_rag_filters_entities_and_relations_without_grounded_evidence():
     assert nodes["ALPHA"][0]["evidence_span"] == "Alpha is present"
 
 
+def test_light_rag_strict_triplet_grounding_requires_grounded_relation_endpoints():
+    llm = _DummyLLM(
+        [
+            (
+                '("entity"<|>"Alpha"<|>"concept"<|>"Alpha is the source node."<|>"Alpha is the source node")##'
+                '("entity"<|>"Beta"<|>"concept"<|>"Beta is the target node."<|>"Beta is the target node")##'
+                '("entity"<|>"Ghost"<|>"concept"<|>"Ghost is unsupported."<|>"Ghost evidence")##'
+                '("relationship"<|>"Alpha"<|>"Beta"<|>"related_to"<|>"supported link"<|>"Alpha links to Beta"<|>0.9)##'
+                '("relationship"<|>"Alpha"<|>"Ghost"<|>"related_to"<|>"unsupported endpoint"<|>"Alpha links to Ghost"<|>0.9)'
+                "<|COMPLETE|>"
+            ),
+            "no",
+        ]
+    )
+    builder = LightRAGKGBuilder(
+        llm_client=llm,
+        strict_triplet_grounding=True,
+        require_entity_evidence=False,
+        require_relation_evidence=False,
+        validate_evidence_in_source=False,
+    )
+    token = CURRENT_LOGGER_VAR.set(logging.getLogger("test-strict-triplet"))
+
+    try:
+        nodes, edges = asyncio.run(
+            builder.extract(
+                Chunk(
+                    id="chunk-1",
+                    type="text",
+                    content=(
+                        "Alpha is the source node. "
+                        "Beta is the target node. "
+                        "Alpha links to Beta. "
+                        "Alpha links to Ghost."
+                    ),
+                    metadata={},
+                )
+            )
+        )
+    finally:
+        CURRENT_LOGGER_VAR.reset(token)
+
+    assert set(nodes.keys()) == {"ALPHA", "BETA"}
+    assert set(edges.keys()) == {("ALPHA", "BETA")}
+
+
+def test_light_rag_strict_triplet_grounding_requires_grounded_relation_evidence():
+    llm = _DummyLLM(
+        [
+            (
+                '("entity"<|>"Alpha"<|>"concept"<|>"Alpha is grounded."<|>"Alpha is grounded")##'
+                '("entity"<|>"Beta"<|>"concept"<|>"Beta is grounded."<|>"Beta is grounded")##'
+                '("relationship"<|>"Alpha"<|>"Beta"<|>"related_to"<|>"unsupported relation"<|>"Missing relation evidence"<|>0.9)'
+                "<|COMPLETE|>"
+            ),
+            "no",
+        ]
+    )
+    builder = LightRAGKGBuilder(
+        llm_client=llm,
+        strict_triplet_grounding=True,
+        require_entity_evidence=False,
+        require_relation_evidence=False,
+        validate_evidence_in_source=False,
+    )
+    token = CURRENT_LOGGER_VAR.set(logging.getLogger("test-strict-relation"))
+
+    try:
+        nodes, edges = asyncio.run(
+            builder.extract(
+                Chunk(
+                    id="chunk-1",
+                    type="text",
+                    content="Alpha is grounded. Beta is grounded.",
+                    metadata={},
+                )
+            )
+        )
+    finally:
+        CURRENT_LOGGER_VAR.reset(token)
+
+    assert nodes == {}
+    assert edges == {}
+
+
+def test_light_rag_non_strict_mode_keeps_relation_without_triplet_grounding():
+    llm = _DummyLLM(
+        [
+            (
+                '("entity"<|>"Alpha"<|>"concept"<|>"Alpha is the source node."<|>"Alpha is the source node")##'
+                '("entity"<|>"Ghost"<|>"concept"<|>"Ghost is unsupported."<|>"Ghost evidence")##'
+                '("relationship"<|>"Alpha"<|>"Ghost"<|>"related_to"<|>"relation kept without strict mode"<|>"Alpha links to Ghost"<|>0.9)'
+                "<|COMPLETE|>"
+            ),
+            "no",
+        ]
+    )
+    builder = LightRAGKGBuilder(
+        llm_client=llm,
+        strict_triplet_grounding=False,
+        require_entity_evidence=False,
+        require_relation_evidence=False,
+        validate_evidence_in_source=False,
+    )
+    token = CURRENT_LOGGER_VAR.set(logging.getLogger("test-non-strict-triplet"))
+
+    try:
+        nodes, edges = asyncio.run(
+            builder.extract(
+                Chunk(
+                    id="chunk-1",
+                    type="text",
+                    content="Alpha is the source node. Alpha links to Ghost.",
+                    metadata={},
+                )
+            )
+        )
+    finally:
+        CURRENT_LOGGER_VAR.reset(token)
+
+    assert set(nodes.keys()) == {"ALPHA", "GHOST"}
+    assert set(edges.keys()) == {("ALPHA", "GHOST")}
+
+
 def test_vqa_prompt_includes_grounding_evidence():
     prompt = VQAGenerator.build_prompt(
         (
@@ -189,6 +313,7 @@ def test_build_grounded_tree_kg_service_splits_text_and_mm_entity_evidence_polic
     assert service.text_require_relation_evidence is True
     assert service.mm_require_relation_evidence is True
     assert service.text_validate_evidence_in_source is True
+    assert service.text_strict_triplet_grounding is True
     assert service.mm_validate_evidence_in_source is True
 
 
@@ -221,28 +346,34 @@ def test_build_kg_service_uses_split_evidence_settings_for_text_and_mm(tmp_path)
             require_entity_evidence=True,
             require_relation_evidence=True,
             validate_evidence_in_source=True,
+            text_strict_triplet_grounding=True,
             mm_require_entity_evidence=False,
         )
-        service.process(
-            [
-                {
-                    "_trace_id": "text-1",
-                    "type": "text",
-                    "content": "Alpha",
-                    "metadata": {},
-                },
-                {
-                    "_trace_id": "image-1",
-                    "type": "image",
-                    "content": "",
-                    "metadata": {"image_caption": ["Figure 1 shows Alpha."]},
-                },
-            ]
-        )
+        token = CURRENT_LOGGER_VAR.set(logging.getLogger("test-build-kg-service"))
+        try:
+            service.process(
+                [
+                    {
+                        "_trace_id": "text-1",
+                        "type": "text",
+                        "content": "Alpha",
+                        "metadata": {},
+                    },
+                    {
+                        "_trace_id": "image-1",
+                        "type": "image",
+                        "content": "",
+                        "metadata": {"image_caption": ["Figure 1 shows Alpha."]},
+                    },
+                ]
+            )
+        finally:
+            CURRENT_LOGGER_VAR.reset(token)
 
     assert captured["text"]["require_entity_evidence"] is True
     assert captured["text"]["require_relation_evidence"] is True
     assert captured["text"]["validate_evidence_in_source"] is True
+    assert captured["text"]["strict_triplet_grounding"] is True
     assert captured["mm"]["require_entity_evidence"] is False
     assert captured["mm"]["require_relation_evidence"] is True
     assert captured["mm"]["validate_evidence_in_source"] is True

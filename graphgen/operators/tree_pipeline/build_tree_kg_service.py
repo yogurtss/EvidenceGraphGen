@@ -76,6 +76,9 @@ class BuildTreeKGService(BaseOperator):
                 "text_validate_evidence_in_source", self.validate_evidence_in_source
             )
         )
+        self.text_strict_triplet_grounding: bool = _to_bool(
+            self.build_kwargs.get("text_strict_triplet_grounding", False)
+        )
         self.mm_validate_evidence_in_source: bool = _to_bool(
             self.build_kwargs.get(
                 "mm_validate_evidence_in_source", self.validate_evidence_in_source
@@ -122,6 +125,7 @@ class BuildTreeKGService(BaseOperator):
                 require_entity_evidence=self.text_require_entity_evidence,
                 require_relation_evidence=self.text_require_relation_evidence,
                 validate_evidence_in_source=self.text_validate_evidence_in_source,
+                strict_triplet_grounding=self.text_strict_triplet_grounding,
             )
             nodes += text_nodes
             edges += text_edges

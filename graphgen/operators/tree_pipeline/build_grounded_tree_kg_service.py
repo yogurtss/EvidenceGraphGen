@@ -20,6 +20,7 @@ class BuildGroundedTreeKGService(BuildTreeKGService):
             "text_require_relation_evidence": True,
             "mm_require_relation_evidence": True,
             "text_validate_evidence_in_source": True,
+            "text_strict_triplet_grounding": True,
             "mm_validate_evidence_in_source": True,
         }
         grounded_kwargs.update(build_kwargs)
