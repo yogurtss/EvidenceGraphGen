@@ -5,6 +5,7 @@ from graphgen.models.generator.vqa_generator import VQAGenerator
 from graphgen.models.partitioner.anchor_bfs_partitioner import AnchorBFSPartitioner
 from graphgen.operators.tree_pipeline import (
     BuildGroundedTreeKGService,
+    FilterEntitiesService,
     HierarchyGenerateService,
     StructureAnalyzeService,
     TreeChunkService,
@@ -129,7 +130,9 @@ def test_structure_analyze_markdown_vqa_components(tmp_path: Path):
     ]
 
     first_table = components[4]
-    assert first_table["metadata"]["table_caption"] == ["Table 1. Accuracy across baselines."]
+    assert first_table["metadata"]["table_caption"] == [
+        "Table 1. Accuracy across baselines."
+    ]
     assert "<table>" in first_table["metadata"]["table_body"]
     assert "[Table Caption]" in first_table["content"]
 
@@ -153,7 +156,9 @@ def test_structure_analyze_markdown_vqa_components(tmp_path: Path):
     assert len(table_chunks) == 2
     assert len(image_chunks) == 2
     assert all(row["type"] != "section" for row in chunk_rows)
-    assert table_chunks[0]["metadata"]["table_caption"] == ["Table 1. Accuracy across baselines."]
+    assert table_chunks[0]["metadata"]["table_caption"] == [
+        "Table 1. Accuracy across baselines."
+    ]
     assert "table_body" in table_chunks[0]["metadata"]
     assert image_chunks[0]["metadata"]["image_caption"] == [
         "Figure 1. The microscope image highlights the reactive region after treatment."
@@ -174,7 +179,11 @@ def test_normalize_components_keeps_captionless_modalities():
         }
     )
 
-    assert [component["type"] for component in components] == ["section", "table", "image"]
+    assert [component["type"] for component in components] == [
+        "section",
+        "table",
+        "image",
+    ]
     assert components[1]["metadata"]["table_caption"] == []
     assert components[2]["metadata"]["image_caption"] == []
 
@@ -193,10 +202,18 @@ def test_normalize_components_keeps_plain_text_when_image_has_no_caption():
         }
     )
 
-    assert [component["type"] for component in components] == ["section", "image", "text", "section"]
+    assert [component["type"] for component in components] == [
+        "section",
+        "image",
+        "text",
+        "section",
+    ]
     assert components[1]["metadata"]["image_caption"] == []
     assert components[1]["metadata"]["note_text"] == ""
-    assert components[2]["content"] == "This line should remain plain text.\nAnother plain text line."
+    assert (
+        components[2]["content"]
+        == "This line should remain plain text.\nAnother plain text line."
+    )
 
 
 def test_normalize_components_splits_text_blocks_into_paragraphs():
@@ -216,7 +233,12 @@ def test_normalize_components_splits_text_blocks_into_paragraphs():
         }
     )
 
-    assert [component["type"] for component in components] == ["section", "text", "text", "text"]
+    assert [component["type"] for component in components] == [
+        "section",
+        "text",
+        "text",
+        "text",
+    ]
     assert [component["content"] for component in components[1:]] == [
         "Paragraph one line one.\nParagraph one line two.",
         "Paragraph two.",
@@ -233,7 +255,11 @@ def test_normalize_components_preserves_empty_sections_and_nested_headings():
         }
     )
 
-    assert [component["type"] for component in components] == ["section", "section", "text"]
+    assert [component["type"] for component in components] == [
+        "section",
+        "section",
+        "text",
+    ]
     assert components[0]["title"] == "# 7.1 ABC"
     assert components[0]["title_level"] == 2
     assert components[1]["title"] == "## 7.2 DEF"
@@ -267,7 +293,12 @@ def test_tree_construct_uses_section_nodes_for_parent_selection(tmp_path: Path):
             "source_trace_id": "read-parent",
             "components": [
                 {"type": "section", "title": "# A", "title_level": 1, "content": ""},
-                {"type": "text", "title": "# A", "title_level": 1, "content": "first comp"},
+                {
+                    "type": "text",
+                    "title": "# A",
+                    "title_level": 1,
+                    "content": "first comp",
+                },
                 {
                     "type": "image",
                     "title": "# A",
@@ -276,7 +307,12 @@ def test_tree_construct_uses_section_nodes_for_parent_selection(tmp_path: Path):
                     "metadata": {"img_path": "demo.png"},
                 },
                 {"type": "section", "title": "## B", "title_level": 2, "content": ""},
-                {"type": "text", "title": "## B", "title_level": 2, "content": "child body"},
+                {
+                    "type": "text",
+                    "title": "## B",
+                    "title_level": 2,
+                    "content": "child body",
+                },
             ],
             "metadata": {},
         }
@@ -284,8 +320,16 @@ def test_tree_construct_uses_section_nodes_for_parent_selection(tmp_path: Path):
 
     tree_rows, _ = tree_service.process(input_docs)
     nodes = tree_rows[0]["tree_nodes"]
-    section_a = next(node for node in nodes if node["node_type"] == "section" and node["title"] == "# A")
-    section_b = next(node for node in nodes if node["node_type"] == "section" and node["title"] == "## B")
+    section_a = next(
+        node
+        for node in nodes
+        if node["node_type"] == "section" and node["title"] == "# A"
+    )
+    section_b = next(
+        node
+        for node in nodes
+        if node["node_type"] == "section" and node["title"] == "## B"
+    )
     image_node = next(node for node in nodes if node["node_type"] == "image")
 
     assert section_b["parent_id"] == section_a["node_id"]
@@ -305,11 +349,36 @@ def test_tree_construct_assigns_unique_paths_for_duplicate_sections(tmp_path: Pa
             "_trace_id": "tree-duplicate",
             "source_trace_id": "read-duplicate",
             "components": [
-                {"type": "section", "title": "# Intro", "title_level": 1, "content": ""},
-                {"type": "section", "title": "## Results", "title_level": 2, "content": ""},
-                {"type": "text", "title": "## Results", "title_level": 2, "content": "first"},
-                {"type": "section", "title": "## Results", "title_level": 2, "content": ""},
-                {"type": "text", "title": "## Results", "title_level": 2, "content": "second"},
+                {
+                    "type": "section",
+                    "title": "# Intro",
+                    "title_level": 1,
+                    "content": "",
+                },
+                {
+                    "type": "section",
+                    "title": "## Results",
+                    "title_level": 2,
+                    "content": "",
+                },
+                {
+                    "type": "text",
+                    "title": "## Results",
+                    "title_level": 2,
+                    "content": "first",
+                },
+                {
+                    "type": "section",
+                    "title": "## Results",
+                    "title_level": 2,
+                    "content": "",
+                },
+                {
+                    "type": "text",
+                    "title": "## Results",
+                    "title_level": 2,
+                    "content": "second",
+                },
             ],
             "metadata": {},
         }
@@ -318,7 +387,9 @@ def test_tree_construct_assigns_unique_paths_for_duplicate_sections(tmp_path: Pa
     tree_rows, _ = tree_service.process(input_docs)
     nodes = tree_rows[0]["tree_nodes"]
     result_sections = [
-        node for node in nodes if node["node_type"] == "section" and node["title"] == "## Results"
+        node
+        for node in nodes
+        if node["node_type"] == "section" and node["title"] == "## Results"
     ]
     text_nodes = [node for node in nodes if node["node_type"] == "text"]
 
@@ -377,3 +448,62 @@ def test_build_grounded_tree_kg_service_enables_evidence_checks(tmp_path: Path):
     assert service.require_entity_evidence is True
     assert service.require_relation_evidence is True
     assert service.validate_evidence_in_source is True
+
+
+def test_filter_entities_service_filters_unsupported_nodes_and_edges(tmp_path: Path):
+    with patch("graphgen.common.init_storage.init_storage", return_value=_DummyKV()):
+        service = FilterEntitiesService(
+            working_dir=str(tmp_path / "cache"),
+            kv_backend="json_kv",
+        )
+
+    records = [
+        {
+            "_trace_id": "text-1",
+            "type": "text",
+            "content": "Alpha is in the source text.",
+            "metadata": {},
+        },
+        {
+            "_trace_id": "ALPHA",
+            "node": {
+                "entity_name": "ALPHA",
+                "source_id": "text-1",
+                "evidence_span": "Alpha is in the source text.",
+            },
+            "edge": {},
+        },
+        {
+            "_trace_id": "GHOST",
+            "node": {
+                "entity_name": "GHOST",
+                "source_id": "text-1",
+                "evidence_span": "This sentence does not exist.",
+            },
+            "edge": {},
+        },
+        {
+            "_trace_id": "frozenset({'ALPHA', 'GHOST'})",
+            "node": {},
+            "edge": {
+                "src_id": "ALPHA",
+                "tgt_id": "GHOST",
+                "source_id": "text-1",
+                "evidence_span": "This sentence does not exist.",
+            },
+        },
+    ]
+
+    results, meta_updates = service.process(records)
+
+    assert meta_updates == {}
+    assert [item["node"]["entity_name"] for item in results if item.get("node")] == [
+        "ALPHA"
+    ]
+    assert not [item for item in results if item.get("edge")]
+
+
+def test_filter_entities_operator_registered():
+    from graphgen.operators import operators
+
+    assert operators["filter_entities"] is FilterEntitiesService
