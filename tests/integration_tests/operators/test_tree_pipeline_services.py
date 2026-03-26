@@ -22,6 +22,9 @@ class _DummyKV:
     def get_by_ids(self, ids):
         return []
 
+    def get_all(self):
+        return {}
+
     def upsert(self, batch):
         return None
 
@@ -33,6 +36,17 @@ class _DummyKV:
 
     def index_done_callback(self):
         return None
+
+
+class _DummyGraph:
+    def reload(self):
+        return None
+
+    def get_all_nodes(self):
+        return []
+
+    def get_all_edges(self):
+        return []
 
 
 def test_tree_pipeline_services_basic(tmp_path: Path):
@@ -451,56 +465,103 @@ def test_build_grounded_tree_kg_service_enables_evidence_checks(tmp_path: Path):
 
 
 def test_filter_entities_service_filters_unsupported_nodes_and_edges(tmp_path: Path):
+    class _SourceKV(_DummyKV):
+        def get_all(self):
+            return {
+                "text-1": {
+                    "_trace_id": "text-1",
+                    "type": "text",
+                    "content": "Alpha is in the source text.",
+                }
+            }
+
+    class _GraphWithData(_DummyGraph):
+        def get_all_nodes(self):
+            return [
+                (
+                    "ALPHA",
+                    {
+                        "entity_name": "ALPHA",
+                        "source_id": "text-1",
+                        "evidence_span": "Alpha is in the source text.",
+                    },
+                ),
+                (
+                    "GHOST",
+                    {
+                        "entity_name": "GHOST",
+                        "source_id": "text-1",
+                        "evidence_span": "This sentence does not exist.",
+                    },
+                ),
+            ]
+
+        def get_all_edges(self):
+            return [
+                (
+                    "ALPHA",
+                    "GHOST",
+                    {
+                        "src_id": "ALPHA",
+                        "tgt_id": "GHOST",
+                        "source_id": "text-1",
+                        "evidence_span": "This sentence does not exist.",
+                    },
+                )
+            ]
+
     with patch("graphgen.common.init_storage.init_storage", return_value=_DummyKV()):
         service = FilterEntitiesService(
             working_dir=str(tmp_path / "cache"),
             kv_backend="json_kv",
+            graph_backend="networkx",
         )
+    service.graph_storage = _GraphWithData()
+    service.source_storage = _SourceKV()
 
-    records = [
-        {
-            "_trace_id": "text-1",
-            "type": "text",
-            "content": "Alpha is in the source text.",
-            "metadata": {},
-        },
-        {
-            "_trace_id": "ALPHA",
-            "node": {
-                "entity_name": "ALPHA",
-                "source_id": "text-1",
-                "evidence_span": "Alpha is in the source text.",
-            },
-            "edge": {},
-        },
-        {
-            "_trace_id": "GHOST",
-            "node": {
-                "entity_name": "GHOST",
-                "source_id": "text-1",
-                "evidence_span": "This sentence does not exist.",
-            },
-            "edge": {},
-        },
-        {
-            "_trace_id": "frozenset({'ALPHA', 'GHOST'})",
-            "node": {},
-            "edge": {
-                "src_id": "ALPHA",
-                "tgt_id": "GHOST",
-                "source_id": "text-1",
-                "evidence_span": "This sentence does not exist.",
-            },
-        },
-    ]
-
-    results, meta_updates = service.process(records)
+    results, meta_updates = service.process([])
 
     assert meta_updates == {}
     assert [item["node"]["entity_name"] for item in results if item.get("node")] == [
         "ALPHA"
     ]
     assert not [item for item in results if item.get("edge")]
+
+
+def test_filter_entities_split_always_processes_full_batch(tmp_path: Path):
+    class _KVWithMeta(_DummyKV):
+        def get_by_id(self, key):
+            if key == "_meta_forward":
+                return {"text-1": ["ALPHA"]}
+            return None
+
+    with patch("graphgen.common.init_storage.init_storage", return_value=_KVWithMeta()):
+        service = FilterEntitiesService(
+            working_dir=str(tmp_path / "cache"),
+            kv_backend="json_kv",
+            graph_backend="networkx",
+        )
+
+    import pandas as pd
+
+    batch = pd.DataFrame(
+        [
+            {"_trace_id": "text-1", "type": "text", "content": "Alpha evidence"},
+            {
+                "_trace_id": "ALPHA",
+                "node": {
+                    "entity_name": "ALPHA",
+                    "source_id": "text-1",
+                    "evidence_span": "Alpha evidence",
+                },
+                "edge": {},
+            },
+        ]
+    )
+
+    to_process, recovered = service.split(batch)
+    assert len(to_process) == len(batch)
+    assert recovered.empty
 
 
 def test_filter_entities_operator_registered():
