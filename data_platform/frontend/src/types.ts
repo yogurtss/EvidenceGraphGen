@@ -12,7 +12,7 @@ export type SourceContext = {
   source_id: string;
   title: string;
   content: string;
-  content_type: "text" | "image_caption" | "table" | "unknown";
+  content_type: "text" | "image" | "image_caption" | "table" | "unknown";
 };
 
 export type RunStats = {

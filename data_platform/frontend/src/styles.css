@@ -384,6 +384,10 @@ button {
   transform: translateY(-1px);
 }
 
+.source-chip-toggle {
+  font-weight: 600;
+}
+
 .filter-row {
   margin-bottom: 14px;
 }
