@@ -38,22 +38,22 @@ class BaseSplitter(ABC):
         """
 
     def create_chunks(
-        self, texts: List[str], meta_data_list: Optional[List[dict]] = None
+        self, texts: List[str], metadata_list: Optional[List[dict]] = None
     ) -> List[Chunk]:
         """Create chunks from a list of texts."""
-        _meta_data_list = meta_data_list or [{}] * len(texts)
+        _metadata_list = metadata_list or [{}] * len(texts)
         chunks = []
         for i, text in enumerate(texts):
             index = 0
             previous_chunk_len = 0
             for chunk in self.split_text(text):
-                meta_data = copy.deepcopy(_meta_data_list[i])
+                metadata = copy.deepcopy(_metadata_list[i])
                 if self.add_start_index:
                     offset = index + previous_chunk_len - self.chunk_overlap
                     index = text.find(chunk, max(0, offset))
-                    meta_data["start_index"] = index
+                    metadata["start_index"] = index
                     previous_chunk_len = len(chunk)
-                new_chunk = Chunk(content=chunk, meta_data=meta_data)
+                new_chunk = Chunk(content=chunk, metadata=metadata)
                 chunks.append(new_chunk)
         return chunks
 

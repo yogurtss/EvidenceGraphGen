@@ -7,9 +7,9 @@ from graphgen.storage import NetworkXStorage
 def test_aggregated_vqa_partitioner_respects_section_scope():
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = NetworkXStorage(working_dir=tmpdir, namespace="agg_vqa_scope")
-        storage.upsert_node("IMG_A", {"entity_type": "IMAGE", "meta_data": {"path": "sec/A"}})
-        storage.upsert_node("TXT_A", {"entity_type": "TEXT", "meta_data": {"path": "sec/A"}})
-        storage.upsert_node("TXT_B", {"entity_type": "TEXT", "meta_data": {"path": "sec/B"}})
+        storage.upsert_node("IMG_A", {"entity_type": "IMAGE", "metadata": {"path": "sec/A"}})
+        storage.upsert_node("TXT_A", {"entity_type": "TEXT", "metadata": {"path": "sec/A"}})
+        storage.upsert_node("TXT_B", {"entity_type": "TEXT", "metadata": {"path": "sec/B"}})
 
         storage.upsert_edge("IMG_A", "TXT_A", {"relation_type": "described_by"})
         storage.upsert_edge("IMG_A", "TXT_B", {"relation_type": "mentions"})
@@ -34,7 +34,7 @@ def test_aggregated_vqa_partitioner_respects_section_scope():
 def test_aggregated_vqa_partitioner_filters_by_modalities():
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = NetworkXStorage(working_dir=tmpdir, namespace="agg_vqa_modal")
-        storage.upsert_node("IMG_ONLY", {"entity_type": "IMAGE", "meta_data": {"path": "sec/A"}})
+        storage.upsert_node("IMG_ONLY", {"entity_type": "IMAGE", "metadata": {"path": "sec/A"}})
 
         partitioner = AggregatedVQAPartitioner(anchor_type=["image"])
         communities = list(

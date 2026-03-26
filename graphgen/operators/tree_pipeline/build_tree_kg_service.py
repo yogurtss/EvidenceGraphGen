@@ -87,8 +87,8 @@ class BuildTreeKGService(BaseOperator):
 
     @staticmethod
     def _inject_tree_context(chunk: Chunk) -> Chunk:
-        meta_data = dict(chunk.meta_data or {})
-        path = meta_data.get("path")
+        metadata = dict(chunk.metadata or {})
+        path = metadata.get("path")
         if not path:
             return chunk
 
@@ -97,7 +97,7 @@ class BuildTreeKGService(BaseOperator):
             id=chunk.id,
             content=contextual_content,
             type=chunk.type,
-            meta_data=meta_data,
+            metadata=metadata,
         )
 
     def process(self, batch: list) -> Tuple[list, dict]:

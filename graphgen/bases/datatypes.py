@@ -20,16 +20,16 @@ class Chunk:
     id: str = ""
     content: str = ""
     type: str = "text"
-    meta_data: dict = field(default_factory=dict)
+    metadata: dict = field(default_factory=dict)
 
     @staticmethod
     def from_dict(key: str, data: dict) -> "Chunk":
-        raw_meta_data = data.get("meta_data", {})
+        raw_metadata = data.get("metadata", {})
         return Chunk(
             id=key,
             content=data.get("content", ""),
             type=data.get("type", "text"),
-            meta_data=dict(raw_meta_data) if isinstance(raw_meta_data, dict) else {},
+            metadata=dict(raw_metadata) if isinstance(raw_metadata, dict) else {},
         )
 
 
@@ -67,7 +67,7 @@ class Community:
     id: Union[int, str]
     nodes: List[str] = field(default_factory=list)
     edges: List[tuple] = field(default_factory=list)
-    meta_data: dict = field(default_factory=dict)
+    metadata: dict = field(default_factory=dict)
 
 
 class Node(BaseModel):

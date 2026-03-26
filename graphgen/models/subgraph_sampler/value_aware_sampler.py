@@ -25,13 +25,13 @@ def _split_source_ids(value: Any) -> set[str]:
     }
 
 
-def _load_meta_data(raw_meta_data: Any) -> dict:
-    if isinstance(raw_meta_data, dict):
-        return raw_meta_data
-    if not raw_meta_data:
+def _load_metadata(raw_metadata: Any) -> dict:
+    if isinstance(raw_metadata, dict):
+        return raw_metadata
+    if not raw_metadata:
         return {}
     try:
-        parsed = json.loads(raw_meta_data)
+        parsed = json.loads(raw_metadata)
     except (TypeError, json.JSONDecodeError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
@@ -236,12 +236,12 @@ class ValueAwareSubgraphSampler:
             entity_type = str(node_data.get("entity_type", "")).upper()
             if "IMAGE" in entity_type or "TABLE" in entity_type:
                 return node_id
-            meta_data = _load_meta_data(node_data.get("meta_data"))
+            metadata = _load_metadata(node_data.get("metadata"))
             if (
-                meta_data.get("image_path")
-                or meta_data.get("img_path")
-                or meta_data.get("table_img_path")
-                or meta_data.get("table_caption")
+                metadata.get("image_path")
+                or metadata.get("img_path")
+                or metadata.get("table_img_path")
+                or metadata.get("table_caption")
             ):
                 return node_id
         return nodes[0][0] if nodes else ""
@@ -254,8 +254,8 @@ class ValueAwareSubgraphSampler:
         for node_id, node_data in nodes:
             if node_id != seed_node_id:
                 continue
-            meta_data = _load_meta_data(node_data.get("meta_data"))
-            seed_chunk_ids.update(_split_source_ids(meta_data.get("source_trace_id", "")))
+            metadata = _load_metadata(node_data.get("metadata"))
+            seed_chunk_ids.update(_split_source_ids(metadata.get("source_trace_id", "")))
             seed_source_ids.update(_split_source_ids(node_data.get("source_id", "")))
             break
         return seed_chunk_ids, seed_source_ids
@@ -315,8 +315,8 @@ class ValueAwareSubgraphSampler:
             return True
         if source_ids & seed_source_ids:
             return True
-        meta_data = _load_meta_data(payload.get("meta_data"))
-        nested_source_ids = _split_source_ids(meta_data.get("source_trace_id", ""))
+        metadata = _load_metadata(payload.get("metadata"))
+        nested_source_ids = _split_source_ids(metadata.get("source_trace_id", ""))
         return bool(nested_source_ids & seed_chunk_ids)
 
     def _propose_extensions(

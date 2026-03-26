@@ -62,7 +62,7 @@ def test_tree_pipeline_services_basic(tmp_path: Path):
             "_trace_id": "read-1",
             "type": "text",
             "content": "# Intro\nGraphGen is great.\n## Details\nSupports tree pipeline.",
-            "meta_data": {"source": "unit-test"},
+            "metadata": {"source": "unit-test"},
         }
     ]
 
@@ -81,7 +81,7 @@ def test_tree_pipeline_services_basic(tmp_path: Path):
 
     chunk_rows, _ = chunk_service.process(tree_rows)
     assert chunk_rows
-    assert all("path" in row["meta_data"] for row in chunk_rows)
+    assert all("path" in row["metadata"] for row in chunk_rows)
     assert all(row["type"] == "text" for row in chunk_rows)
 
 
@@ -129,19 +129,19 @@ def test_structure_analyze_markdown_vqa_components(tmp_path: Path):
     ]
 
     first_table = components[4]
-    assert first_table["meta_data"]["table_caption"] == ["Table 1. Accuracy across baselines."]
-    assert "<table>" in first_table["meta_data"]["table_body"]
+    assert first_table["metadata"]["table_caption"] == ["Table 1. Accuracy across baselines."]
+    assert "<table>" in first_table["metadata"]["table_body"]
     assert "[Table Caption]" in first_table["content"]
 
     first_image = components[7]
-    assert first_image["meta_data"]["img_path"].endswith(".jpg")
-    assert first_image["meta_data"]["image_caption"] == [
+    assert first_image["metadata"]["img_path"].endswith(".jpg")
+    assert first_image["metadata"]["image_caption"] == [
         "Figure 1. The microscope image highlights the reactive region after treatment."
     ]
-    assert "arrows mark the highlighted tissue" in first_image["meta_data"]["note_text"]
+    assert "arrows mark the highlighted tissue" in first_image["metadata"]["note_text"]
 
     second_image = components[8]
-    assert second_image["meta_data"]["image_caption"] == []
+    assert second_image["metadata"]["image_caption"] == []
     assert second_image["content"] == ""
 
     hierarchy_rows, _ = hierarchy_service.process(structure_rows)
@@ -153,13 +153,13 @@ def test_structure_analyze_markdown_vqa_components(tmp_path: Path):
     assert len(table_chunks) == 2
     assert len(image_chunks) == 2
     assert all(row["type"] != "section" for row in chunk_rows)
-    assert table_chunks[0]["meta_data"]["table_caption"] == ["Table 1. Accuracy across baselines."]
-    assert "table_body" in table_chunks[0]["meta_data"]
-    assert image_chunks[0]["meta_data"]["image_caption"] == [
+    assert table_chunks[0]["metadata"]["table_caption"] == ["Table 1. Accuracy across baselines."]
+    assert "table_body" in table_chunks[0]["metadata"]
+    assert image_chunks[0]["metadata"]["image_caption"] == [
         "Figure 1. The microscope image highlights the reactive region after treatment."
     ]
-    assert "note_text" in image_chunks[0]["meta_data"]
-    assert image_chunks[1]["meta_data"]["image_caption"] == []
+    assert "note_text" in image_chunks[0]["metadata"]
+    assert image_chunks[1]["metadata"]["image_caption"] == []
 
 
 def test_normalize_components_keeps_captionless_modalities():
@@ -175,8 +175,8 @@ def test_normalize_components_keeps_captionless_modalities():
     )
 
     assert [component["type"] for component in components] == ["section", "table", "image"]
-    assert components[1]["meta_data"]["table_caption"] == []
-    assert components[2]["meta_data"]["image_caption"] == []
+    assert components[1]["metadata"]["table_caption"] == []
+    assert components[2]["metadata"]["image_caption"] == []
 
 
 def test_normalize_components_keeps_plain_text_when_image_has_no_caption():
@@ -194,8 +194,8 @@ def test_normalize_components_keeps_plain_text_when_image_has_no_caption():
     )
 
     assert [component["type"] for component in components] == ["section", "image", "text", "section"]
-    assert components[1]["meta_data"]["image_caption"] == []
-    assert components[1]["meta_data"]["note_text"] == ""
+    assert components[1]["metadata"]["image_caption"] == []
+    assert components[1]["metadata"]["note_text"] == ""
     assert components[2]["content"] == "This line should remain plain text.\nAnother plain text line."
 
 
@@ -273,12 +273,12 @@ def test_tree_construct_uses_section_nodes_for_parent_selection(tmp_path: Path):
                     "title": "# A",
                     "title_level": 1,
                     "content": "",
-                    "meta_data": {"img_path": "demo.png"},
+                    "metadata": {"img_path": "demo.png"},
                 },
                 {"type": "section", "title": "## B", "title_level": 2, "content": ""},
                 {"type": "text", "title": "## B", "title_level": 2, "content": "child body"},
             ],
-            "meta_data": {},
+            "metadata": {},
         }
     ]
 
@@ -311,7 +311,7 @@ def test_tree_construct_assigns_unique_paths_for_duplicate_sections(tmp_path: Pa
                 {"type": "section", "title": "## Results", "title_level": 2, "content": ""},
                 {"type": "text", "title": "## Results", "title_level": 2, "content": "second"},
             ],
-            "meta_data": {},
+            "metadata": {},
         }
     ]
 

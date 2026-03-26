@@ -26,13 +26,13 @@ class BaseGenerator(ABC):
         """Parse the LLM response and return the generated QAs"""
 
     @staticmethod
-    def load_meta_data(raw_meta_data: Any) -> dict:
-        if isinstance(raw_meta_data, dict):
-            return raw_meta_data
-        if not raw_meta_data:
+    def load_metadata(raw_metadata: Any) -> dict:
+        if isinstance(raw_metadata, dict):
+            return raw_metadata
+        if not raw_metadata:
             return {}
         try:
-            parsed = json.loads(raw_meta_data)
+            parsed = json.loads(raw_metadata)
         except (TypeError, json.JSONDecodeError):
             return {}
         return parsed if isinstance(parsed, dict) else {}
@@ -42,32 +42,33 @@ class BaseGenerator(ABC):
         entity_type = str(node_data.get("entity_type", "")).upper()
         if any(tag in entity_type for tag in ("IMAGE", "TABLE", "FORMULA")):
             return True
-        meta_data = BaseGenerator.load_meta_data(node_data.get("meta_data"))
+        metadata = BaseGenerator.load_metadata(node_data.get("metadata"))
         return any(
-            meta_data.get(key)
+            metadata.get(key)
             for key in ("image_path", "img_path", "table_img_path", "equation_img_path")
         )
 
     @staticmethod
-    def _extract_visual_asset_from_meta_data(meta_data: dict) -> str:
-        if not isinstance(meta_data, dict):
+    def _extract_visual_asset_from_metadata(metadata: dict) -> str:
+        if not isinstance(metadata, dict):
             return ""
         for key in ("image_path", "img_path", "table_img_path", "equation_img_path"):
-            asset_path = meta_data.get(key)
+            asset_path = metadata.get(key)
             if asset_path:
                 return str(asset_path)
         return ""
 
     @classmethod
     def extract_visual_asset_path(
+        cls,
         batch: tuple[list[tuple[str, dict]], list[tuple[Any, Any, dict]]]
     ) -> str:
         nodes, _ = batch
         for _, node_data in nodes:
             if not cls._is_visual_node(node_data):
                 continue
-            meta_data = cls.load_meta_data(node_data.get("meta_data"))
-            asset_path = cls._extract_visual_asset_from_meta_data(meta_data)
+            metadata = cls.load_metadata(node_data.get("metadata"))
+            asset_path = cls._extract_visual_asset_from_metadata(metadata)
             if asset_path:
                 return asset_path
         return ""
