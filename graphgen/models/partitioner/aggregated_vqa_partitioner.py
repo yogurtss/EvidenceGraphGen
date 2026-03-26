@@ -82,13 +82,13 @@ class AggregatedVQAPartitioner(AnchorBFSPartitioner):
             yield Community(id=seed_node, nodes=comm_n, edges=comm_e)
 
     @staticmethod
-    def _extract_meta_data(node_meta: dict) -> dict:
-        raw_meta_data = node_meta.get("meta_data")
-        if isinstance(raw_meta_data, dict):
-            return raw_meta_data
-        if isinstance(raw_meta_data, str):
+    def _extract_metadata(node_meta: dict) -> dict:
+        raw_metadata = node_meta.get("metadata")
+        if isinstance(raw_metadata, dict):
+            return raw_metadata
+        if isinstance(raw_metadata, str):
             try:
-                parsed = json.loads(raw_meta_data)
+                parsed = json.loads(raw_metadata)
             except (TypeError, json.JSONDecodeError):
                 return {}
             if isinstance(parsed, dict):
@@ -97,8 +97,8 @@ class AggregatedVQAPartitioner(AnchorBFSPartitioner):
 
     @classmethod
     def _get_section_path(cls, node_meta: dict) -> str:
-        meta_data = cls._extract_meta_data(node_meta)
-        path = meta_data.get("path") or node_meta.get("path")
+        metadata = cls._extract_metadata(node_meta)
+        path = metadata.get("path") or node_meta.get("path")
         if not path:
             return ""
         return str(path).strip()
@@ -115,9 +115,9 @@ class AggregatedVQAPartitioner(AnchorBFSPartitioner):
         if entity_type:
             return "text"
 
-        meta_data = cls._extract_meta_data(node_meta)
-        if meta_data:
-            modality = str(meta_data.get("modality", "")).lower()
+        metadata = cls._extract_metadata(node_meta)
+        if metadata:
+            modality = str(metadata.get("modality", "")).lower()
             if modality:
                 return modality
         return "text"

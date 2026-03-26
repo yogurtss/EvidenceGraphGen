@@ -59,7 +59,7 @@ def test_light_rag_filters_entities_and_relations_without_grounded_evidence():
                     id="chunk-1",
                     type="text",
                     content="Alpha is present in the source text.",
-                    meta_data={},
+                    metadata={},
                 )
             )
         )
@@ -80,7 +80,7 @@ def test_vqa_prompt_includes_grounding_evidence():
                     {
                         "description": "A microscopy image of treated tissue.",
                         "evidence_span": "Figure 1 shows treated tissue.",
-                        "meta_data": '{"img_path":"demo.png"}',
+                        "metadata": '{"img_path":"demo.png"}',
                     },
                 )
             ],
@@ -115,7 +115,7 @@ def test_vqa_generator_keeps_short_qa_when_other_quality_checks_pass():
                         "DRAM",
                         {
                             "description": "DRAM chip layout.",
-                            "meta_data": '{"img_path":"demo.png"}',
+                            "metadata": '{"img_path":"demo.png"}',
                         },
                     )
                 ],
@@ -157,7 +157,7 @@ def test_mm_kg_builder_accepts_entity_records_without_evidence():
                 id="image-1",
                 type="image",
                 content="",
-                meta_data={"image_caption": ["Figure 1 shows treated tissue."]},
+                metadata={"image_caption": ["Figure 1 shows treated tissue."]},
             )
         )
     )
@@ -223,12 +223,12 @@ def test_build_kg_service_uses_split_evidence_settings_for_text_and_mm(tmp_path)
         )
         service.process(
             [
-                {"_trace_id": "text-1", "type": "text", "content": "Alpha", "meta_data": {}},
+                {"_trace_id": "text-1", "type": "text", "content": "Alpha", "metadata": {}},
                 {
                     "_trace_id": "image-1",
                     "type": "image",
                     "content": "",
-                    "meta_data": {"image_caption": ["Figure 1 shows Alpha."]},
+                    "metadata": {"image_caption": ["Figure 1 shows Alpha."]},
                 },
             ]
         )
@@ -300,7 +300,7 @@ def test_build_grounded_tree_kg_service_can_filter_text_entities_without_source_
                         "_trace_id": "text-1",
                         "type": "text",
                         "content": "Alpha is in the source text.",
-                        "meta_data": {},
+                        "metadata": {},
                     }
                 ]
             )
@@ -339,7 +339,7 @@ def test_aggregated_vqa_generator_attaches_image_path():
                             "FIG-1",
                             {
                                 "description": "DRAM architecture",
-                                "meta_data": '{"img_path":"demo.png"}',
+                                "metadata": '{"img_path":"demo.png"}',
                             },
                         )
                     ],

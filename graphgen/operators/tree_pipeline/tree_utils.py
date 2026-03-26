@@ -45,8 +45,8 @@ def compact_text(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", (text or "").strip())
 
 
-def merge_meta_data(doc: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]:
-    base = dict(doc.get("meta_data", {}))
+def merge_metadata(doc: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]:
+    base = dict(doc.get("metadata", {}))
     base.update(extra)
     return base
 
@@ -166,8 +166,8 @@ def _extract_image_path(line: str) -> str:
     return ""
 
 
-def _normalize_mm_payload(meta_data: Dict[str, Any]) -> Dict[str, Any]:
-    normalized = dict(meta_data)
+def _normalize_mm_payload(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(metadata)
     caption = normalized.get("table_caption")
     if isinstance(caption, str):
         normalized["table_caption"] = [caption] if caption else []
@@ -288,7 +288,7 @@ def _parse_markdown_components(content: str) -> List[Dict[str, Any]]:
 
             table_body = compact_text("\n".join(table_lines))
             caption_lines = [use_caption] if use_caption else []
-            meta_data = _normalize_mm_payload(
+            metadata = _normalize_mm_payload(
                 {
                     "table_body": table_body,
                     "table_caption": caption_lines,
@@ -298,9 +298,9 @@ def _parse_markdown_components(content: str) -> List[Dict[str, Any]]:
                 {
                     "type": "table",
                     "title": current_title,
-                    "content": _build_table_content(meta_data["table_caption"], table_body),
+                    "content": _build_table_content(metadata["table_caption"], table_body),
                     "title_level": infer_title_level(current_title),
-                    "meta_data": meta_data,
+                    "metadata": metadata,
                 }
             )
             continue
@@ -310,7 +310,7 @@ def _parse_markdown_components(content: str) -> List[Dict[str, Any]]:
             img_path = _extract_image_path(line)
             idx, caption_lines, note_lines = _consume_trailing_image_lines(lines, idx + 1)
             note_text = compact_text("\n".join(note_lines))
-            meta_data = _normalize_mm_payload(
+            metadata = _normalize_mm_payload(
                 {
                     "img_path": img_path,
                     "image_caption": caption_lines,
@@ -322,10 +322,10 @@ def _parse_markdown_components(content: str) -> List[Dict[str, Any]]:
                     "type": "image",
                     "title": current_title,
                     "content": _build_image_content(
-                        meta_data["image_caption"], meta_data["note_text"]
+                        metadata["image_caption"], metadata["note_text"]
                     ),
                     "title_level": infer_title_level(current_title),
-                    "meta_data": meta_data,
+                    "metadata": metadata,
                 }
             )
             continue
@@ -339,7 +339,7 @@ def _parse_markdown_components(content: str) -> List[Dict[str, Any]]:
         for component in components
         if component.get("type") == "section"
         or component.get("content")
-        or component.get("meta_data")
+        or component.get("metadata")
     ]
 
 
