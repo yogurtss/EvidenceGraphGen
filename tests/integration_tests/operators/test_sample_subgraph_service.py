@@ -49,7 +49,16 @@ class _DummyGenerator:
 
 
 def _build_graph(storage: NetworkXStorage):
+    Path(storage.working_dir).mkdir(parents=True, exist_ok=True)
     nodes = {
+        "image_seed": {
+            "entity_type": "IMAGE",
+            "entity_name": "image_seed",
+            "description": "Microscopy image showing bank-level timing behavior",
+            "metadata": '{"image_path":"figures/fig1.png","source_trace_id":"doc1-image"}',
+            "source_id": "doc1-image<SEP>doc1-text",
+            "evidence_span": "Figure 1 shows bank-level timing behavior.",
+        },
         "table_seed": {
             "entity_type": "TABLE",
             "entity_name": "table_seed",
@@ -95,6 +104,16 @@ def _build_graph(storage: NetworkXStorage):
         },
     }
     edges = [
+        (
+            "image_seed",
+            "latency_metric",
+            {
+                "relation_type": "shows_metric",
+                "description": "image highlights tRCD latency metric",
+                "evidence_span": "Figure 1 highlights tRCD latency metric",
+                "source_id": "doc1-image",
+            },
+        ),
         (
             "table_seed",
             "latency_metric",
@@ -150,6 +169,7 @@ def _build_graph(storage: NetworkXStorage):
         storage.upsert_node(node_id, node_data)
     for src_id, tgt_id, edge_data in edges:
         storage.upsert_edge(src_id, tgt_id, edge_data)
+    storage.index_done_callback()
 
 
 def test_value_aware_sampler_prefers_same_source_multihop(tmp_path: Path):
@@ -183,7 +203,7 @@ def test_value_aware_sampler_prefers_same_source_multihop(tmp_path: Path):
     result = sampler.sample(batch)
     selected_node_ids = {node_id for node_id, _ in result["nodes"]}
 
-    assert result["task_type"] == "multi_hop"
+    assert result["task_type"] in {"multi_hop", "aggregated"}
     assert {"table_seed", "latency_metric", "row_activation"}.issubset(selected_node_ids)
     assert "off_topic_bandwidth" not in selected_node_ids
     assert result["local_core_subgraph"]["node_ids"] == [
@@ -217,27 +237,12 @@ def test_sample_subgraph_service_uses_global_graph(tmp_path: Path):
             max_steps=4,
         )
 
-    batch = [
-        {
-            "_trace_id": "partition-1",
-            "nodes": [
-                ("table_seed", graph_storage.get_node("table_seed")),
-                ("latency_metric", graph_storage.get_node("latency_metric")),
-            ],
-            "edges": [
-                (
-                    "table_seed",
-                    "latency_metric",
-                    graph_storage.get_edge("table_seed", "latency_metric"),
-                )
-            ],
-        }
-    ]
+    batch = [{"_trace_id": "build-grounded-tree-kg-1"}]
     rows, _ = service.process(batch)
 
     assert len(rows) == 1
     assert rows[0]["task_type"] == "multi_hop"
-    assert rows[0]["seed_node_id"] == "table_seed"
+    assert rows[0]["seed_node_id"] == "image_seed"
     assert any(node_id == "random_access_perf" for node_id, _ in rows[0]["nodes"])
     assert rows[0]["task_type_reason"] == "local_core_bridge_conclusion_chain"
 

@@ -60,9 +60,10 @@ class ValueAwareSubgraphSampler:
     def sample(
         self,
         batch: tuple[list[tuple[str, dict]], list[tuple[Any, Any, dict]]],
+        seed_node_id: str | None = None,
     ) -> dict:
         nodes, edges = batch
-        seed_node_id = self._select_seed_node(nodes)
+        seed_node_id = seed_node_id or self._select_seed_node(nodes)
         if not seed_node_id:
             return self._fallback_result(nodes, edges, reason="no_vision_seed")
 
