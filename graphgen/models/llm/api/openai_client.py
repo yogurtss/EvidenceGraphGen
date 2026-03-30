@@ -1,4 +1,7 @@
+import base64
 import math
+import mimetypes
+import os
 from typing import Any, Dict, List, Optional
 
 import openai
@@ -86,7 +89,48 @@ class OpenAIClient(BaseLLMWrapper):
         else:
             raise ValueError(f"Unsupported backend {self.backend}. Use 'openai_api' or 'azure_openai_api'.")
 
-    def _pre_generate(self, text: str, history: List[str]) -> Dict:
+    @staticmethod
+    def _resolve_image_url(image_path: Optional[str]) -> Optional[str]:
+        if not image_path:
+            return None
+        if image_path.startswith(("http://", "https://", "data:")):
+            return image_path
+        if not os.path.exists(image_path):
+            return None
+
+        mime_type, _ = mimetypes.guess_type(image_path)
+        mime_type = mime_type or "application/octet-stream"
+        with open(image_path, "rb") as image_file:
+            encoded = base64.b64encode(image_file.read()).decode("utf-8")
+        return f"data:{mime_type};base64,{encoded}"
+
+    @classmethod
+    def _build_user_content(
+        cls, text: str, image_path: Optional[str] = None
+    ) -> str | list[dict[str, Any]]:
+        image_url = cls._resolve_image_url(image_path)
+        if not image_url:
+            return text
+        return [
+            {"type": "text", "text": text},
+            {"type": "image_url", "image_url": {"url": image_url}},
+        ]
+
+    @staticmethod
+    def _content_to_text(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            text_parts = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text_parts.append(str(item.get("text", "")))
+            return "\n".join(part for part in text_parts if part)
+        return str(content)
+
+    def _pre_generate(
+        self, text: str, history: List[str], image_path: Optional[str] = None
+    ) -> Dict:
         kwargs = {
             "temperature": self.temperature,
             "top_p": self.top_p,
@@ -100,7 +144,9 @@ class OpenAIClient(BaseLLMWrapper):
         messages = []
         if self.system_prompt:
             messages.append({"role": "system", "content": self.system_prompt})
-        messages.append({"role": "user", "content": text})
+        messages.append(
+            {"role": "user", "content": self._build_user_content(text, image_path)}
+        )
 
         if history:
             assert len(history) % 2 == 0, "History should have even number of elements."
@@ -122,7 +168,7 @@ class OpenAIClient(BaseLLMWrapper):
         history: Optional[List[str]] = None,
         **extra: Any,
     ) -> List[Token]:
-        kwargs = self._pre_generate(text, history)
+        kwargs = self._pre_generate(text, history, extra.get("image_path"))
         if self.topk_per_token > 0:
             kwargs["logprobs"] = True
             kwargs["top_logprobs"] = self.topk_per_token
@@ -151,11 +197,11 @@ class OpenAIClient(BaseLLMWrapper):
         history: Optional[List[str]] = None,
         **extra: Any,
     ) -> str:
-        kwargs = self._pre_generate(text, history)
+        kwargs = self._pre_generate(text, history, extra.get("image_path"))
 
         prompt_tokens = 0
         for message in kwargs["messages"]:
-            prompt_tokens += len(self.tokenizer.encode(message["content"]))
+            prompt_tokens += len(self.tokenizer.encode(self._content_to_text(message["content"])))
         estimated_tokens = prompt_tokens + kwargs["max_tokens"]
 
         if self.request_limit:

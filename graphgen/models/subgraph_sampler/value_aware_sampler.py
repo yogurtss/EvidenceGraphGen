@@ -78,6 +78,7 @@ class ValueAwareSubgraphSampler:
             nodes=nodes,
             edges=edges,
             seed_chunk_ids=seed_chunk_ids,
+            seed_source_ids=seed_source_ids,
         )
         if len(local_core_node_ids) <= 1:
             return self._fallback_result(
@@ -256,8 +257,13 @@ class ValueAwareSubgraphSampler:
             if node_id != seed_node_id:
                 continue
             metadata = _load_metadata(node_data.get("metadata"))
-            seed_chunk_ids.update(_split_source_ids(metadata.get("source_trace_id", "")))
-            seed_source_ids.update(_split_source_ids(node_data.get("source_id", "")))
+            direct_source_ids = _split_source_ids(node_data.get("source_id", ""))
+            trace_source_ids = _split_source_ids(metadata.get("source_trace_id", ""))
+            seed_chunk_ids.update(direct_source_ids)
+            if not seed_chunk_ids:
+                seed_chunk_ids.update(trace_source_ids)
+            seed_source_ids.update(direct_source_ids)
+            seed_source_ids.update(trace_source_ids)
             break
         return seed_chunk_ids, seed_source_ids
 
@@ -268,27 +274,47 @@ class ValueAwareSubgraphSampler:
         nodes: list[tuple[str, dict]],
         edges: list[tuple[Any, Any, dict]],
         seed_chunk_ids: set[str],
+        seed_source_ids: set[str],
     ) -> tuple[set[str], set[tuple[str, str]]]:
         current_nodes = {seed_node_id}
         current_edges: set[tuple[str, str]] = set()
 
-        for node_id, node_data in nodes:
-            if node_id == seed_node_id:
+        scoped_neighbors = []
+        for neighbor_id in self.graph.get_neighbors(seed_node_id):
+            node_data = self.graph.get_node(neighbor_id) or {}
+            edge_data = self.graph.get_edge(seed_node_id, neighbor_id) or self.graph.get_edge(
+                neighbor_id, seed_node_id
+            )
+            if not edge_data:
                 continue
-            if self._belongs_to_seed_chunk(node_data, seed_chunk_ids):
-                current_nodes.add(node_id)
 
-        for src_id, tgt_id, edge_data in edges:
-            edge_pair = _normalize_edge_pair(src_id, tgt_id)
-            if self._belongs_to_seed_chunk(edge_data, seed_chunk_ids):
-                current_edges.add(edge_pair)
-                current_nodes.add(str(src_id))
-                current_nodes.add(str(tgt_id))
+            in_seed_chunk = self._belongs_to_seed_chunk(
+                node_data, seed_chunk_ids
+            ) or self._belongs_to_seed_chunk(edge_data, seed_chunk_ids)
+            in_seed_scope = self._belongs_to_seed_scope(
+                node_data, seed_source_ids, seed_chunk_ids
+            ) or self._belongs_to_seed_scope(edge_data, seed_source_ids, seed_chunk_ids)
+            scoped_neighbors.append(
+                (
+                    str(neighbor_id),
+                    _normalize_edge_pair(seed_node_id, neighbor_id),
+                    in_seed_chunk,
+                    in_seed_scope,
+                )
+            )
+
+        for neighbor_id, edge_pair, in_seed_chunk, _ in scoped_neighbors:
+            if not in_seed_chunk:
                 continue
-            if seed_node_id in {src_id, tgt_id}:
-                other_id = str(tgt_id if str(src_id) == seed_node_id else src_id)
-                if other_id in current_nodes:
-                    current_edges.add(edge_pair)
+            current_nodes.add(neighbor_id)
+            current_edges.add(edge_pair)
+
+        if len(current_nodes) <= 1:
+            for neighbor_id, edge_pair, _, in_seed_scope in scoped_neighbors:
+                if not in_seed_scope:
+                    continue
+                current_nodes.add(neighbor_id)
+                current_edges.add(edge_pair)
 
         for node_id in list(current_nodes):
             for neighbor_id in self.graph.get_neighbors(node_id):
@@ -297,7 +323,9 @@ class ValueAwareSubgraphSampler:
                 edge_data = self.graph.get_edge(node_id, neighbor_id) or self.graph.get_edge(
                     neighbor_id, node_id
                 )
-                if edge_data and self._belongs_to_seed_chunk(edge_data, seed_chunk_ids):
+                if edge_data and self._belongs_to_seed_scope(
+                    edge_data, seed_source_ids, seed_chunk_ids
+                ):
                     current_edges.add(_normalize_edge_pair(node_id, neighbor_id))
 
         return current_nodes, current_edges
@@ -318,7 +346,7 @@ class ValueAwareSubgraphSampler:
             return True
         metadata = _load_metadata(payload.get("metadata"))
         nested_source_ids = _split_source_ids(metadata.get("source_trace_id", ""))
-        return bool(nested_source_ids & seed_chunk_ids)
+        return bool(nested_source_ids & seed_source_ids)
 
     def _propose_extensions(
         self,
@@ -491,6 +519,7 @@ class ValueAwareSubgraphSampler:
                 seed_chunk_ids,
                 seed_source_ids,
                 local_core_node_ids,
+                local_core_edge_pairs,
                 extension_node_ids,
                 edge_payloads,
             ),
@@ -613,16 +642,28 @@ class ValueAwareSubgraphSampler:
         seed_chunk_ids: set[str],
         seed_source_ids: set[str],
         local_core_node_ids: set[str],
+        local_core_edge_pairs: set[tuple[str, str]],
         extension_node_ids: set[str],
         edge_payloads: list[tuple[str, str, dict]],
     ) -> bool:
-        if not local_core_node_ids:
+        if not local_core_node_ids or seed_node_id not in local_core_node_ids:
+            return False
+        seed_connected_local_nodes = {
+            node_b if node_a == seed_node_id else node_a
+            for node_a, node_b in local_core_edge_pairs
+            if seed_node_id in {node_a, node_b}
+        }
+        if not seed_connected_local_nodes:
             return False
         for node_id in local_core_node_ids:
             node_data = self.graph.get_node(node_id) or {}
             if node_id == seed_node_id:
                 continue
-            if not self._belongs_to_seed_chunk(node_data, seed_chunk_ids):
+            if not self._belongs_to_seed_scope(node_data, seed_source_ids, seed_chunk_ids):
+                return False
+            if node_id not in seed_connected_local_nodes and not any(
+                node_id in edge_pair for edge_pair in local_core_edge_pairs
+            ):
                 return False
 
         if not extension_node_ids:
