@@ -35,12 +35,47 @@ class SampleSubgraphService(BaseOperator):
         )
 
     def process(self, batch: list) -> Tuple[list, dict]:
+        # aggregate operator: ignore per-batch rows and always load full graph
         self.graph_storage.reload()
+        nodes = self.graph_storage.get_all_nodes() or []
+        edges = self.graph_storage.get_all_edges() or []
+        seed_node_ids = [
+            node_id for node_id, node_data in nodes if self._is_image_node(node_data)
+        ]
+
         results = []
-        meta_updates = {}
-        for item in batch:
-            sampled = self.sampler.sample((item.get("nodes", []), item.get("edges", [])))
+        for seed_node_id in seed_node_ids:
+            sampled = self.sampler.sample((nodes, edges), seed_node_id=seed_node_id)
             sampled["_trace_id"] = self.get_trace_id(sampled)
             results.append(sampled)
-            meta_updates.setdefault(item["_trace_id"], []).append(sampled["_trace_id"])
-        return results, meta_updates
+        return results, {}
+
+    def split(self, batch):
+        """
+        Aggregate operators must evaluate the full upstream dataset in one pass.
+        Bypass BaseOperator cache-based splitting so process() always executes.
+        """
+        import pandas as pd
+
+        return batch, pd.DataFrame()
+
+    @staticmethod
+    def _is_image_node(node_data: dict) -> bool:
+        entity_type = str((node_data or {}).get("entity_type", "")).upper()
+        if "IMAGE" in entity_type:
+            return True
+        metadata = node_data.get("metadata") if isinstance(node_data, dict) else {}
+        if isinstance(metadata, str):
+            import json
+
+            try:
+                metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                metadata = {}
+        if not isinstance(metadata, dict):
+            return False
+        return bool(
+            metadata.get("image_path")
+            or metadata.get("img_path")
+            or metadata.get("image_caption")
+        )
