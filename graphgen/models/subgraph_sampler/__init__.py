@@ -1,3 +1,4 @@
-from .value_aware_sampler import ValueAwareSubgraphSampler
+from .graph_editing_vlm_sampler import GraphEditingVLMSubgraphSampler
+from .agentic_vlm_sampler import VLMSubgraphSampler
 
-__all__ = ["ValueAwareSubgraphSampler"]
+__all__ = ["VLMSubgraphSampler", "GraphEditingVLMSubgraphSampler"]

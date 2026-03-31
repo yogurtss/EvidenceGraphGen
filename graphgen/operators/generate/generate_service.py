@@ -1,5 +1,6 @@
 import copy
 import json
+import re
 from typing import Tuple
 
 from graphgen.bases import BaseKVStorage, BaseLLMWrapper, BaseOperator
@@ -10,7 +11,7 @@ from graphgen.utils import logger, run_concurrent
 
 class GenerateService(BaseOperator):
     """
-    Generate question-answer pairs based on nodes and edges.
+    Generate question-answer pairs from selected subgraphs or direct graph slices.
     """
 
     def __init__(
@@ -107,24 +108,14 @@ class GenerateService(BaseOperator):
 
     def process(self, batch: list) -> Tuple[list, dict]:
         """
-        Generate question-answer pairs based on nodes and edges.
+        Generate question-answer pairs from selected subgraphs or direct graph slices.
         """
         logger.info("[Generation] mode: %s, batches: %d", self.method, len(batch))
         if self.method == "auto":
-            tasks = [
-                (
-                    item.get("task_type", "aggregated"),
-                    (item["nodes"], item["edges"]),
-                )
-                for item in batch
-            ]
+            tasks = self._build_auto_tasks(batch)
 
             async def _generate_task(task):
-                task_type, triple = task
-                generator = self.generator_map.get(task_type) or self.generator_map[
-                    "aggregated"
-                ]
-                return await generator.generate(triple)
+                return await self._generate_auto_qa_pairs(task)
 
             results = run_concurrent(
                 _generate_task,
@@ -143,64 +134,73 @@ class GenerateService(BaseOperator):
 
         meta_updates = {}
         final_results = []
-        for item, qa_pairs in zip(batch, results):
-            if not qa_pairs:
-                continue
-            input_trace_id = item["_trace_id"]
-            sub_graph = {
-                "nodes": copy.deepcopy(item.get("nodes", [])),
-                "edges": copy.deepcopy(item.get("edges", [])),
-            }
-            sub_graph_summary = self._build_sub_graph_summary(
-                item.get("nodes", []), item.get("edges", [])
-            )
-            for qa_pair in qa_pairs:
-                formatter = self.generator
-                if self.method == "auto":
+        if self.method == "auto":
+            for task, generated_pairs in zip(tasks, results):
+                if not generated_pairs:
+                    continue
+                item = task["item"]
+                input_trace_id = item["_trace_id"]
+                subgraph_item = task["subgraph_item"]
+                sub_graph = {
+                    "nodes": copy.deepcopy(subgraph_item.get("nodes", [])),
+                    "edges": copy.deepcopy(subgraph_item.get("edges", [])),
+                }
+                sub_graph_summary = self._build_sub_graph_summary(
+                    subgraph_item.get("nodes", []), subgraph_item.get("edges", [])
+                )
+                for generated in generated_pairs:
+                    generator_key = generated["generator_key"]
+                    qa_pair = generated["qa_pair"]
                     formatter = self.generator_map.get(
-                        item.get("task_type", "aggregated"),
-                        self.generator_map["aggregated"],
+                        generator_key, self.generator_map["aggregated"]
                     )
-                res = formatter.format_generation_results(
-                    qa_pair, output_data_format=self.data_format
+                    res = formatter.format_generation_results(
+                        qa_pair, output_data_format=self.data_format
+                    )
+                    res["sub_graph"] = json.dumps(sub_graph, ensure_ascii=False)
+                    res["sub_graph_summary"] = json.dumps(
+                        sub_graph_summary, ensure_ascii=False
+                    )
+                    self._attach_common_metadata(
+                        res=res,
+                        item=item,
+                        subgraph_item=subgraph_item,
+                        generator_key=generator_key,
+                    )
+                    res["_trace_id"] = self.get_trace_id(res)
+                    final_results.append(res)
+                    meta_updates.setdefault(input_trace_id, []).append(res["_trace_id"])
+        else:
+            for item, qa_pairs in zip(batch, results):
+                if not qa_pairs:
+                    continue
+                input_trace_id = item["_trace_id"]
+                sub_graph = {
+                    "nodes": copy.deepcopy(item.get("nodes", [])),
+                    "edges": copy.deepcopy(item.get("edges", [])),
+                }
+                sub_graph_summary = self._build_sub_graph_summary(
+                    item.get("nodes", []), item.get("edges", [])
                 )
-                res["sub_graph"] = json.dumps(sub_graph, ensure_ascii=False)
-                res["sub_graph_summary"] = json.dumps(
-                    sub_graph_summary, ensure_ascii=False
-                )
-                if item.get("task_type"):
-                    res["task_type"] = item["task_type"]
-                if item.get("seed_node_id"):
-                    res["seed_node_id"] = item["seed_node_id"]
-                if item.get("selection_rationale"):
-                    res["selection_rationale"] = item["selection_rationale"]
-                if item.get("value_breakdown"):
-                    res["value_breakdown"] = json.dumps(
-                        item["value_breakdown"], ensure_ascii=False
+                for qa_pair in qa_pairs:
+                    res = self.generator.format_generation_results(
+                        qa_pair, output_data_format=self.data_format
                     )
-                if item.get("subgraph_score") is not None:
-                    res["subgraph_score"] = item["subgraph_score"]
-                if item.get("task_type_reason"):
-                    res["task_type_reason"] = item["task_type_reason"]
-                if item.get("local_core_subgraph"):
-                    res["local_core_subgraph"] = json.dumps(
-                        item["local_core_subgraph"], ensure_ascii=False
+                    res["sub_graph"] = json.dumps(sub_graph, ensure_ascii=False)
+                    res["sub_graph_summary"] = json.dumps(
+                        sub_graph_summary, ensure_ascii=False
                     )
-                if item.get("extension_subgraph"):
-                    res["extension_subgraph"] = json.dumps(
-                        item["extension_subgraph"], ensure_ascii=False
+                    self._attach_common_metadata(
+                        res=res,
+                        item=item,
+                        subgraph_item=item,
+                        generator_key=item.get(
+                            "generator_key", item.get("task_type", self.method)
+                        ),
                     )
-                if item.get("node_roles"):
-                    res["node_roles"] = json.dumps(
-                        item["node_roles"], ensure_ascii=False
-                    )
-                if item.get("seed_chunk_ids"):
-                    res["seed_chunk_ids"] = json.dumps(
-                        item["seed_chunk_ids"], ensure_ascii=False
-                    )
-                res["_trace_id"] = self.get_trace_id(res)
-                final_results.append(res)
-                meta_updates.setdefault(input_trace_id, []).append(res["_trace_id"])
+                    res["_trace_id"] = self.get_trace_id(res)
+                    final_results.append(res)
+                    meta_updates.setdefault(input_trace_id, []).append(res["_trace_id"])
         return final_results, meta_updates
 
     def split(self, batch):
@@ -262,3 +262,170 @@ class GenerateService(BaseOperator):
             parsed.get("nodes", []), parsed.get("edges", [])
         )
         return json.dumps(summary, ensure_ascii=False)
+
+    def _build_auto_tasks(self, batch: list) -> list[dict]:
+        tasks = []
+        for item in batch:
+            selected_subgraphs = item.get("selected_subgraphs")
+            if not isinstance(selected_subgraphs, list) or not selected_subgraphs:
+                continue
+
+            max_qas = min(
+                3,
+                max(1, int(item.get("max_vqas_per_selected_subgraph", 2))),
+            )
+            for selected in selected_subgraphs:
+                if not isinstance(selected, dict):
+                    continue
+                nodes = selected.get("nodes")
+                edges = selected.get("edges")
+                if nodes is None or edges is None or not nodes:
+                    continue
+                generator_keys = self._resolve_generator_keys(
+                    selected.get("approved_question_types", []),
+                    degraded=bool(selected.get("degraded")),
+                    max_qas=max_qas,
+                )
+                tasks.append(
+                    {
+                        "item": item,
+                        "subgraph_item": selected,
+                        "generator_keys": generator_keys,
+                        "triple": (nodes, edges),
+                        "max_qas": max_qas,
+                    }
+                )
+        return tasks
+
+    async def _generate_auto_qa_pairs(self, task: dict) -> list[dict]:
+        triple = task["triple"]
+        max_qas = max(1, int(task.get("max_qas", 1)))
+        generator_keys = task.get("generator_keys", [])
+        generated = []
+        seen = set()
+
+        for generator_key in generator_keys:
+            if len(generated) >= max_qas:
+                break
+            generator = self.generator_map.get(generator_key) or self.generator_map[
+                "aggregated"
+            ]
+            qa_pairs = await generator.generate(triple)
+            accepted_pairs = self._dedupe_qa_pairs(
+                qa_pairs,
+                max_qas=max_qas - len(generated),
+                seen=seen,
+            )
+            for qa_pair in accepted_pairs:
+                generated.append(
+                    {
+                        "generator_key": generator_key,
+                        "qa_pair": qa_pair,
+                    }
+                )
+                if len(generated) >= max_qas:
+                    break
+        return generated
+
+    def _attach_common_metadata(
+        self,
+        *,
+        res: dict,
+        item: dict,
+        subgraph_item: dict,
+        generator_key: str,
+    ) -> None:
+        if item.get("seed_node_id"):
+            res["seed_node_id"] = item["seed_node_id"]
+        if item.get("seed_image_path"):
+            res["seed_image_path"] = item["seed_image_path"]
+        if item.get("selection_mode"):
+            res["selection_mode"] = item["selection_mode"]
+        if item.get("degraded") is not None:
+            res["degraded"] = bool(
+                subgraph_item.get("degraded", item.get("degraded", False))
+            )
+        if item.get("degraded_reason"):
+            res["degraded_reason"] = item["degraded_reason"]
+        if item.get("candidate_bundle") is not None:
+            res["candidate_bundle"] = json.dumps(
+                item.get("candidate_bundle", []), ensure_ascii=False
+            )
+        if subgraph_item.get("subgraph_id"):
+            res["subgraph_id"] = subgraph_item["subgraph_id"]
+        if subgraph_item.get("technical_focus"):
+            res["technical_focus"] = subgraph_item["technical_focus"]
+        if subgraph_item.get("image_grounding_summary"):
+            res["image_grounding_summary"] = subgraph_item["image_grounding_summary"]
+        if subgraph_item.get("evidence_summary"):
+            res["evidence_summary"] = subgraph_item["evidence_summary"]
+        if subgraph_item.get("judge_scores"):
+            res["judge_scores"] = json.dumps(
+                subgraph_item["judge_scores"], ensure_ascii=False
+            )
+        if subgraph_item.get("approved_question_types"):
+            res["approved_question_types"] = json.dumps(
+                subgraph_item["approved_question_types"], ensure_ascii=False
+            )
+
+        if generator_key:
+            res["generator_key"] = generator_key
+            res["task_type"] = generator_key
+
+    def _resolve_generator_keys(
+        self,
+        approved_question_types: list,
+        *,
+        degraded: bool,
+        max_qas: int,
+    ) -> list[str]:
+        question_types = [
+            str(item).strip().lower()
+            for item in approved_question_types
+            if str(item).strip()
+        ]
+        generator_keys = []
+        for question_type in question_types:
+            if any(token in question_type for token in ("multi_hop", "causal", "constraint")):
+                generator_key = "multi_hop"
+            elif any(token in question_type for token in ("chart", "diagram", "parameter", "comparison", "interpretation")):
+                generator_key = "aggregated"
+            else:
+                generator_key = "vqa"
+            if generator_key not in generator_keys:
+                generator_keys.append(generator_key)
+        if degraded and "aggregated" not in generator_keys:
+            generator_keys.insert(0, "aggregated")
+        if not generator_keys:
+            generator_keys = ["aggregated"]
+        return generator_keys[:max_qas]
+
+    @staticmethod
+    def _normalize_signature(text: str) -> str:
+        return re.sub(r"\s+", " ", str(text or "").strip().lower())
+
+    def _dedupe_qa_pairs(
+        self,
+        qa_pairs: list[dict],
+        *,
+        max_qas: int,
+        seen: set[str] | None = None,
+    ) -> list[dict]:
+        deduped = []
+        seen = seen if seen is not None else set()
+        for qa_pair in qa_pairs or []:
+            if not isinstance(qa_pair, dict):
+                continue
+            question = qa_pair.get("question", "")
+            answer = qa_pair.get("answer", "")
+            signature = (
+                f"{self._normalize_signature(question)}|"
+                f"{self._normalize_signature(answer)}"
+            )
+            if not question or not answer or signature in seen:
+                continue
+            seen.add(signature)
+            deduped.append(qa_pair)
+            if len(deduped) >= max_qas:
+                break
+        return deduped

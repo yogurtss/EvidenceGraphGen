@@ -1,6 +1,9 @@
 from typing import Any, Dict, List, Set, Union
 
-import ray
+try:
+    import ray
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    ray = None
 
 from graphgen.bases.base_storage import BaseGraphStorage, BaseKVStorage
 
@@ -188,7 +191,7 @@ class RemoteKVStorageProxy(BaseKVStorage):
 
 
 class RemoteGraphStorageProxy(BaseGraphStorage):
-    def __init__(self, actor_handle: ray.actor.ActorHandle):
+    def __init__(self, actor_handle: Any):
         super().__init__()
         self.actor = actor_handle
 
@@ -293,6 +296,31 @@ class StorageFactory:
 
     @staticmethod
     def create_storage(backend: str, working_dir: str, namespace: str):
+        if ray is None or not hasattr(ray, "get_actor"):
+            from graphgen.storage import (
+                JsonKVStorage,
+                KuzuStorage,
+                NetworkXStorage,
+                RocksDBKVStorage,
+            )
+
+            if backend == "json_kv":
+                return JsonKVStorage(working_dir, namespace)
+            if backend == "rocksdb":
+                if RocksDBKVStorage is None:
+                    raise ModuleNotFoundError(
+                        "RocksDBKVStorage backend requires optional dependency `rocksdict`."
+                    )
+                return RocksDBKVStorage(working_dir, namespace)
+            if backend == "networkx":
+                return NetworkXStorage(working_dir, namespace)
+            if backend == "kuzu":
+                if KuzuStorage is None:
+                    raise ModuleNotFoundError(
+                        "KuzuStorage backend requires optional kuzu dependency."
+                    )
+                return KuzuStorage(working_dir, namespace)
+            raise ValueError(f"Unknown storage backend: {backend}")
 
         if backend in ["json_kv", "rocksdb"]:
             actor_name = f"Actor_KV_{namespace}"

@@ -27,10 +27,16 @@ This variant inserts:
 partition -> sample_subgraph -> generate(method=auto)
 ```
 
-`sample_subgraph` first recovers the modality-local core extracted from the image/table chunk itself,
-then searches the fused global KG under a size budget for higher-value bridge/support/comparison/conclusion
-extensions. It emits a single best subgraph plus `task_type` for downstream generation through
-`AggregatedVQAGenerator` or `MultiHopVQAGenerator`.
+`sample_subgraph` now runs a VLM-driven planner / retriever-assembler / judge loop around each
+image seed, constructs one or more explicit `selected_subgraphs`, and passes them to
+`generate(method=auto)` for downstream question generation.
+
+If you want the graph-editing `v2` workflow, use `agentic_subgraph_reasoning_v2_config.yaml`.
+This variant inserts:
+
+```text
+partition -> sample_subgraph_v2 -> generate(method=auto)
+```
 
 ### 3) Quality controls already enabled
 - Prompt-level constraints for DRAM/VQA reasoning (structure, timing, performance, comparison, grounding).
@@ -47,4 +53,6 @@ extensions. It emits a single best subgraph plus `task_type` for downstream gene
 ### 4) Recommended config tuning
 In `vqa_config.yaml` under `generate.params`, tune the general generation settings such as `data_format`.
 For `agentic_subgraph_reasoning_config.yaml`, the main knobs are `sample_subgraph.params.max_units`,
-`max_steps`, and `max_hops_from_seed`.
+`candidate_pool_size`, and `max_hops_from_seed`.
+For `agentic_subgraph_reasoning_v2_config.yaml`, the main knobs are
+`sample_subgraph_v2.params.hard_cap_units`, `max_rounds`, and `judge_pass_threshold`.

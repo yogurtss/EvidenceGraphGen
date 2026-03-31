@@ -4,7 +4,10 @@ import os
 from logging.handlers import RotatingFileHandler
 from typing import Any
 
-from rich.logging import RichHandler
+try:
+    from rich.logging import RichHandler
+except ModuleNotFoundError:  # pragma: no cover - environment dependent
+    RichHandler = None
 
 
 def set_logger(
@@ -35,10 +38,15 @@ def set_logger(
         os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
     if if_stream:
-        console = RichHandler(
-            level=console_level, show_path=False, rich_tracebacks=True
-        )
-        console.setFormatter(logging.Formatter("%(message)s"))
+        if RichHandler is not None:
+            console = RichHandler(
+                level=console_level, show_path=False, rich_tracebacks=True
+            )
+            console.setFormatter(logging.Formatter("%(message)s"))
+        else:
+            console = logging.StreamHandler()
+            console.setLevel(console_level)
+            console.setFormatter(logging.Formatter("%(message)s"))
         current_logger.addHandler(console)
 
     file_handler = RotatingFileHandler(
@@ -62,10 +70,13 @@ CURRENT_LOGGER_VAR = contextvars.ContextVar("current_logger")
 
 
 def get_current_logger() -> logging.Logger:
-    current_logger = CURRENT_LOGGER_VAR.get()
-    if not current_logger:
-        raise RuntimeError("No logger is set in the current context.")
-    return current_logger
+    try:
+        current_logger = CURRENT_LOGGER_VAR.get()
+    except LookupError:
+        current_logger = None
+    if current_logger:
+        return current_logger
+    return logging.getLogger("graphgen")
 
 
 class ContextAwareLogger:

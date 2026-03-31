@@ -2,36 +2,45 @@
 
 ## 导读
 
-本文专门解释当前新增的 `agentic subgraph sampler`，也就是：
+本文说明当前两条 agentic subgraph sampling 链路：
 
 ```text
 partition -> sample_subgraph -> generate(method=auto)
+partition -> sample_subgraph_v2 -> generate(method=auto)
 ```
 
-它的目标不是简单做“远端信息融合”，而是在预算受限、仍然保持 vision-centered 的前提下，从融合后的全局 KG 里主动挑选一个**更值得生成 QA 的单个子图**。
+它们都面向技术文档图像，只是内部策略不同：
 
-这里最重要的前提是：
+- `sample_subgraph`
+  - 当前稳定的 `v1 baseline`
+  - 采用 `Planner -> Retriever / Assembler -> Judge` 的单轮候选构图
+- `sample_subgraph_v2`
+  - 新的 graph-editing agent
+  - 采用 `Coordinator + Editor + Judge` 的状态式编辑回路
 
-- `image/table` 周围第一圈 entity/relation 不是 agent 后续随便搜索出来的邻居
-- 它们本来就来自 `MMKGBuilder` 对该 image/table chunk 的直接抽取
-- 所以 agent 真正操作的是：
-  - 固定 `vision anchor + modality-local core`
-  - 再从全局融合图中挑选 `bridge/support/comparison/conclusion` 扩展
+设计目标是：
 
-当前这条链路主要服务：
+- 以 `image seed` 为中心
+- 从现有融合 KG 里严格选择节点和边
+- 构出一个或少量高质量、强图像依赖的显式子图
+- 再基于该子图生成高质量技术 VQA
 
-- `aggregated`
-- `multi_hop`
+它主要服务这类数据：
 
-而不是 `atomic`。
+- JEDEC / DRAM spec
+- timing diagram
+- architecture/block diagram
+- table-as-image
+- 其他技术密集型图文材料
 
-## 1. 它在整个 pipeline 里的位置
+## 1. 它在 pipeline 里的位置
 
 对应配置见：
 
 - `examples/generate/generate_vqa/agentic_subgraph_reasoning_config.yaml`
+- `examples/generate/generate_vqa/agentic_subgraph_reasoning_v2_config.yaml`
 
-完整链路是：
+完整链路可以走两种变体：
 
 ```text
 read
@@ -45,518 +54,716 @@ read
 -> generate(method=auto)
 ```
 
-这里各阶段的职责分工是：
+```text
+read
+-> structure_analyze
+-> hierarchy_generate
+-> tree_construct
+-> tree_chunk
+-> build_grounded_tree_kg
+-> partition(anchor_bfs, image/table)
+-> sample_subgraph_v2
+-> generate(method=auto)
+```
+
+各阶段职责分成两层：
 
 - `partition`
-  - 只负责给出一个 vision-centered 初始 seed/community
+  - 只负责给出一个 vision-centered 的初始 seed community
 - `sample_subgraph`
-  - 在融合图上围绕这个 seed 做受控扩展和价值选择
+  - `v1` 围绕 image seed 做单轮 candidate construction
+  - 产出显式 artifact，而不是直接出题
+- `sample_subgraph_v2`
+  - `v2` 围绕 image seed 做 graph-editing agent search
+  - 产出显式 artifact，而不是直接出题
 - `generate(method=auto)`
-  - 根据 sampler 输出的 `task_type`，自动走 `AggregatedVQAGenerator` 或 `MultiHopVQAGenerator`
+  - 消费 `selected_subgraphs`
+  - 根据 question type 自动选择合适 generator
 
-换句话说，`partition` 不再承担“最终上下文选择器”的职责，真正决定最终子图的是 `sample_subgraph`。
+换句话说，真正决定“最终拿哪个子图来出题”的阶段是 `sample_subgraph` / `sample_subgraph_v2`。
 
-## 2. 当前实现的核心目标
+## 2. 实现结构
 
-当前实现对应代码：
+`v1` 对应代码：
 
-- `graphgen/models/subgraph_sampler/value_aware_sampler.py`
+- `graphgen/models/subgraph_sampler/agentic_vlm_sampler.py`
+- `graphgen/models/subgraph_sampler/artifacts.py`
+- `graphgen/models/subgraph_sampler/prompts.py`
+- `graphgen/models/subgraph_sampler/constants.py`
 - `graphgen/operators/sample_subgraph/sample_subgraph_service.py`
 
-它优化的是一个平衡目标：
+`v2` 对应代码：
 
-1. 先满足安全阈值
-2. 再在安全阈值内最大化训练价值
+- `graphgen/models/subgraph_sampler/graph_editing_vlm_sampler.py`
+- `graphgen/models/subgraph_sampler/v2_artifacts.py`
+- `graphgen/models/subgraph_sampler/v2_prompts.py`
+- `graphgen/operators/sample_subgraph_v2/sample_subgraph_v2_service.py`
+- `graphgen/operators/generate/generate_service.py`
 
-这里的“安全阈值”主要指：
+其中职责拆分如下：
 
-- 子图仍然以 image/table seed 为中心
-- 子图内部仍然闭合、可答
-- 关键证据不太稀薄
-- 不要把融合图里别的文档内容错误拼进来
+- `agentic_vlm_sampler.py`
+  - `v1` orchestration、neighborhood 收集、candidate 选优
+- `graph_editing_vlm_sampler.py`
+  - `v2` coordinator loop、stateful graph editing、judge-driven stopping
+- `artifacts.py`
+  - `v1` 的结构化 schema、JSON payload 解析、基础清洗
+- `v2_artifacts.py`
+  - `v2` 的 editor action、candidate state、judge feedback、session trace
+- `prompts.py`
+  - `v1` planner / assembler / judge 的 prompt 渲染
+- `v2_prompts.py`
+  - `v2` editor / judge 的 prompt 渲染
+- `constants.py`
+  - 放 question family 和技术关键词常量
 
-而“训练价值”主要指：
+### 2.1 V1 角色
 
-- 能否支持更高价值的问题形态
-- 是否更适合 `aggregated` 或 `multi_hop`
-- 是否真的依赖视觉 seed，而不是退化成普通文本 QA
+- `Planner`
+  - 看 image seed、seed metadata、seed 周边 KG 证据
+  - 提出 2-3 个“值得构图”的技术意图
+- `Retriever / Assembler`
+  - 只从现有 KG 中选择节点和边
+  - 为每个意图组装一个 candidate subgraph
+- `Judge`
+  - 对每个 candidate 做结构化打分
+  - 决定通过、拒绝，还是走 degraded path
 
-## 3. 为什么它需要存在
+### 2.2 V2 角色
 
-当前 GraphGen 的固定 partition 有两个典型问题：
+- `Coordinator`
+  - 控制回合、扩图、degraded fallback、停止条件和最终提交
+- `Editor`
+  - 对 candidate subgraph state 执行显式图编辑动作
+- `Judge`
+  - 对当前 state 做结构化验收，并返回下一轮可用反馈
 
-### 3.1 只靠局部扩张，容易过窄
+### 2.3 输出 artifact
 
-`anchor_bfs` 很适合保证 image/table 在中心，但它拿到的往往只是 vision node 周边的一小团局部事实。
+两条链路最终都会输出兼容 `generate(method=auto)` 的 artifact，核心字段包括：
 
-这会导致：
+- `seed_node_id`
+- `seed_image_path`
+- `selection_mode`
+- `degraded`
+- `degraded_reason`
+- `selected_subgraphs`
+- `candidate_bundle`
+- `abstained`
 
-- 上下文很稳
-- 但训练价值可能偏低
-- 对 `aggregated` 和真正的 `multi_hop` 支撑不够
+`v2` 还会额外输出：
 
-### 3.2 一旦盲目做大社区，又容易错配
+- `sampler_version`
+- `agent_session`
+- `candidate_states`
+- `edit_trace`
+- `judge_trace`
+- `neighborhood_trace`
+- `termination_reason`
 
-如果继续扩大 BFS 半径，或者直接做更大的社区，很容易把：
+### 2.4 生成阶段如何衔接
 
-- 不同 section 的主题
-- 融合图里同名但不同文档的事实
-- 与当前图表无关的高频实体
+`GenerateService(method=auto)` 现在会优先读取：
 
-一起拉进来。
+- `selected_subgraphs[*].nodes`
+- `selected_subgraphs[*].edges`
+- `selected_subgraphs[*].approved_question_types`
+- `selected_subgraphs[*].degraded`
 
-所以 sampler 的任务不是“拿更多信息”，而是：
+也就是说：
 
-**在受限预算内，挑一个更高价值但仍然可靠的子图。**
+- 选图由 agent artifact 决定
+- 出题由 downstream generator 决定
+- 最终结果里会显式带 `generator_key`
+- `task_type` 只是 `generator_key` 的镜像字段，便于旧下游继续读取
 
-## 4. 它为什么叫 agentic
+## 3. V1 整体执行逻辑
 
-当前第一版不是一个自由漫游的大 agent，而是一个**受控的、策略驱动的子图搜索器**。
+从实现角度看，`sample_subgraph` 的主流程可以概括成下面这几步。
 
-它的 agentic 性主要体现在：
+### 3.0 流程图
 
-- 不是固定一次性给定最终社区
-- 而是从 seed 出发，迭代地产生候选扩展
-- 每次扩展后重新评估是否值得继续
-- 当增益不再明显时主动停止
+```mermaid
+flowchart TD
+    A[partition output<br/>vision-centered seed community] --> B[SampleSubgraphService]
+    B --> C[scan graph and pick image seeds]
+    C --> D[for each image seed]
 
-所以它更像：
+    subgraph S["sample_subgraph agentic loop"]
+        D --> E[recover seed scope<br/>source_id and source_trace_id]
+        E --> F[collect controlled neighborhood<br/>node_ids edges distances]
+        F --> G[Planner<br/>propose 2-3 technical intents]
+        G --> H[Retriever / Assembler<br/>build KG-constrained candidates]
+        H --> I[Judge<br/>score image necessity answer stability evidence closure]
+        I --> J{any candidate passes?}
+        J -- yes --> K[select best candidate or multiple distinct themes]
+        J -- no --> L{allow degraded?}
+        L -- yes --> M[degraded planner / assembler / judge pass]
+        L -- no --> N[abstain]
+        M --> O{degraded candidate passes?}
+        O -- yes --> K
+        O -- no --> N
+    end
 
-```text
-budgeted search + value-based stopping
+    K --> P[selected_subgraphs]
+    N --> Q[empty result with abstained=true]
+
+    subgraph G2["generate(method=auto)"]
+        P --> R[read approved_question_types]
+        R --> T[route to aggregated / multi_hop / vqa]
+        T --> U[generate and dedupe QA pairs]
+    end
 ```
 
-而不是：
+### 3.1 找 image seed
 
-```text
-static partition
+`SampleSubgraphService.process()` 会加载全局 graph storage，扫描所有节点，只把 image-like 节点当成 seed：
+
+- `entity_type` 包含 `IMAGE`
+- 或 metadata 里带 `image_path` / `img_path`
+
+当前 v1 重点是 `image seed`，不是所有 `table` seed。
+
+### 3.2 恢复 seed scope，并收集 neighborhood
+
+因为当前图是融合图，不是按文档隔离的图，所以不能直接把所有近邻都当成可用上下文。
+
+实现会先恢复 seed 的 source scope：
+
+- `node.source_id`
+- `metadata.source_trace_id`
+
+然后基于这个 scope，从 seed 出发做受控 BFS，得到一个 neighborhood：
+
+- `node_ids`
+- `edges`
+- `distances`
+
+这个 neighborhood 就是后续 planner / assembler / judge 共享的候选空间。
+
+关键点：
+
+- 仍然保留“同源优先”的约束
+- neighborhood 是共享候选空间，不预先切成固定子结构
+- agent 在这个空间里自行选择最终 candidate 所需证据
+
+### 3.3 Planner：提出 candidate intents
+
+Planner 的输入包括：
+
+- seed node id
+- seed description
+- image path
+- neighborhood 摘要
+- 当前允许的 question family
+- 是否处于 degraded mode
+
+Planner 输出的是若干 intent，例如：
+
+- 围绕 timing constraint 构图
+- 围绕 architecture relation 构图
+- 围绕 parameter comparison 构图
+
+每个 intent 会带：
+
+- `intent`
+- `technical_focus`
+- `question_types`
+- `priority_keywords`
+
+默认最多生成 `candidate_pool_size=3` 个 intent。
+
+### 3.4 Retriever / Assembler：为每个 intent 组装 candidate subgraph
+
+Assembler 的约束非常严格：
+
+- 只能使用 neighborhood 里已有的 `node_ids`
+- 只能使用已有的 `edge_pairs`
+- 不能创造新节点
+- 不能自由补边
+- 必须满足 size budget
+
+Assembler 输出的 candidate 至少包含：
+
+- `candidate_id`
+- `intent`
+- `technical_focus`
+- `node_ids`
+- `edge_pairs`
+- `approved_question_types`
+- `image_grounding_summary`
+- `evidence_summary`
+- `degraded`
+
+这里的 `image_grounding_summary` 很重要，它明确解释：
+
+“为什么这道题如果不看图，就不应该稳定答出来”
+
+### 3.5 Judge：结构化打分并决定通过 / 拒绝
+
+Judge 不再只给一个抽象总分，而是输出显式 rubric：
+
+- `image_indispensability`
+- `answer_stability`
+- `evidence_closure`
+- `technical_relevance`
+- `reasoning_depth`
+- `hallucination_risk`
+- `theme_coherence`
+- `overall_score`
+- `passes`
+
+其中 pass gate 主要要求：
+
+- 图像是必要的，而不是可有可无
+- 答案是稳定的，不是猜测性的
+- 图与子图内证据能闭合
+- 技术主题是明确而一致的
+- hallucination risk 不能太高
+
+如果某个 candidate 没过线，Judge 会给：
+
+- `decision = rejected`
+- `rejection_reason`
+
+### 3.6 Primary 失败时走 degraded path
+
+如果 primary candidates 全部失败，而且 `allow_degraded=true`，就会再跑一轮 degraded intent / candidate / judge。
+
+degraded 的含义不是“放宽事实标准”，而是：
+
+- 题型更保守
+- 推理链更短
+- 更接近技术图表的直接解读
+
+但它仍然必须满足：
+
+- 依赖图像
+- 答案稳定
+- 证据闭合
+
+如果 degraded 也失败，就直接 `abstained = true`，不强行产出低质量样本。
+
+### 3.7 从 accepted candidates 中选 final subgraph
+
+只要有 candidate 通过 Judge，系统就会进入 selection 阶段。
+
+默认策略是：
+
+- 优先保留一个最优 candidate
+- 如果 `max_selected_subgraphs > 1`
+- 且多个 candidate 主题足够分离
+- 且 overlap 不高
+- 才允许进入 `selection_mode = multi`
+
+所以默认输出通常是：
+
+- `selection_mode = single`
+- `selected_subgraphs` 里只有 1 个 subgraph
+
+只有图中明显存在多个独立技术主题时，才会保留多个 selected subgraph。
+
+## 4. V2 整体执行逻辑
+
+`sample_subgraph_v2` 不再一次性拼出 candidate，而是在一个候选子图状态上做显式编辑。
+
+### 4.0 流程图
+
+```mermaid
+flowchart TD
+    A[partition output<br/>vision-centered seed community] --> B[SampleSubgraphV2Service]
+    B --> C[scan graph and pick image seeds]
+    C --> D[for each image seed]
+
+    subgraph S["sample_subgraph_v2 graph-editing loop"]
+        D --> E[collect 1-hop neighborhood around image seed]
+        E --> F[initialize candidate state<br/>seed only]
+        F --> G[Coordinator starts round]
+        G --> H[EditorV2<br/>query/add/remove/revise/commit]
+        H --> I{commit for judgement?}
+        I -- no --> G
+        I -- yes --> J[JudgeV2<br/>score sufficiency and give feedback]
+        J --> K{sufficient?}
+        K -- yes --> L[materialize selected_subgraphs]
+        K -- no --> M{needs expansion?}
+        M -- yes --> N[expand neighborhood to 2-hop once]
+        N --> G
+        M -- no --> O{allow degraded?}
+        O -- yes --> P[restart session in degraded mode]
+        O -- no --> Q[abstain]
+        P --> G
+    end
+
+    L --> R[selected_subgraphs + v2 traces]
+    Q --> S2[empty result with abstained=true]
+
+    subgraph G2["generate(method=auto)"]
+        R --> T[read approved_question_types]
+        T --> U[route to aggregated / multi_hop / vqa]
+        U --> V[generate and dedupe QA pairs]
+    end
 ```
 
-当前实现还没有引入独立 LLM 工具调用器来做多轮规划；第一版的“agentic”主要由启发式搜索策略体现。
+### 4.1 初始 neighborhood
 
-## 5. 三层结构
+`v2` 的初始 neighborhood 不再使用 `same source_id` 作为硬门槛，而是：
 
-当前更准确的理解应当是：
+- 以 `image seed` 为中心
+- 从 seed 的直接图邻居开始，也就是 `1-hop`
+- 必要时再扩到 `2-hop`
+- provenance 只作为 guardrail，用来拦明显跨文档噪声
 
-```text
-Layer 0: vision anchor
-Layer 1: modality-local extracted core
-Layer 2: merged global extensions
+当前假设是：image chunk 已经把 caption / note 等与图像强相关的局部语义带进图里，所以第一轮搜索不需要单独再去拼 caption-specific 入口。
+
+### 4.2 Candidate state
+
+`v2` 在运行时维护一个显式的 candidate state，核心内容包括：
+
+- `candidate_id`
+- `seed_node_id`
+- `intent`
+- `technical_focus`
+- `approved_question_types`
+- `node_ids`
+- `edge_pairs`
+- `image_grounding_summary`
+- `evidence_summary`
+- `status`
+- `degraded`
+
+这意味着 `v2` 的工作对象不再是“一次生成的 candidate payload”，而是“一个会被持续修改的子图状态”。
+
+### 4.3 Editor 动作
+
+`Editor` 的动作集合是显式的：
+
+- `query_nodes`
+- `query_edges`
+- `add_node`
+- `add_edge`
+- `remove_node`
+- `remove_edge`
+- `revise_intent`
+- `commit_for_judgement`
+
+约束也很明确：
+
+- 只能操作 candidate membership，不能修改 KG 事实
+- 不能创造 synthetic node 或 synthetic edge
+- `revise_intent` 只允许修改题意、技术焦点和 question family
+- 最终 candidate 大小不设 target size，但受 `hard_cap_units` 限制
+
+### 4.4 停止条件和扩图
+
+`v2` 的 subgraph 大小不是预先固定的，而是由 agent 自己决定是否继续生长。
+
+当前策略是：
+
+- 初始从 `1-hop` 开始
+- 如果 judge 认为证据不足，coordinator 可以扩到 `2-hop`
+- 扩图最多只发生一次
+- 只要 judge 认为当前 candidate 已经 `sufficient`
+  - 就立即停止
+- 系统不追求固定大小，只追求“对当前题型足够”的子图
+- 仍然保留 `hard_cap_units` 作为 safety boundary，防止 runaway growth
+
+### 4.5 Degraded mode
+
+如果主路径下的 graph-editing session 没能得到 sufficient candidate，而且 `allow_degraded=true`，`v2` 会重启一条 degraded session：
+
+- question family 更保守
+- candidate 结构更偏向直接读图 / 直接读参数
+- 仍然必须满足 image-required、answer-stable、evidence-closed
+
+如果 degraded session 也失败，就直接 abstain。
+
+## 5. 输出 artifact 长什么样
+
+`v1` 顶层输出大致如下：
+
+```json
+{
+  "seed_node_id": "image_seed",
+  "seed_image_path": "figures/fig1.png",
+  "selection_mode": "single",
+  "degraded": false,
+  "degraded_reason": "",
+  "selected_subgraphs": [...],
+  "candidate_bundle": [...],
+  "abstained": false,
+  "max_vqas_per_selected_subgraph": 2
+}
 ```
 
-### 5.1 Layer 0: vision anchor
+`v2` 在兼容字段之外，还会多出下面这些字段：
 
-就是 image/table 节点本身。
+```json
+{
+  "sampler_version": "v2",
+  "agent_session": {...},
+  "candidate_states": [...],
+  "edit_trace": [...],
+  "judge_trace": [...],
+  "neighborhood_trace": [...],
+  "termination_reason": "judge_marked_sufficient"
+}
+```
 
-### 5.2 Layer 1: modality-local extracted core
+### 5.1 `selected_subgraphs`
 
-这是由 `MMKGBuilder` 对该 image/table chunk 直接抽出的 mini-KG：
+每个最终通过的子图包含：
 
-- seed 本体
-- 从该 chunk 抽出的 entity
-- 以及这些 entity 与 seed 的局部关系
-
-这层不是 agent 搜索出来的，而是 agent 的固定起点。
-
-### 5.3 Layer 2: merged global extensions
-
-这是 merge 进全局图后，和 local core 相连的更远事实：
-
-- bridge node
-- support fact
-- comparison branch
-- conclusion node
-
-agent 真正要做的是在这一层里做受控选择。
-
-## 6. 当前实现如何工作
-
-### 6.1 输入
-
-`sample_subgraph` 接收的是 `partition` 输出的 batch：
-
+- `subgraph_id`
+- `technical_focus`
 - `nodes`
 - `edges`
+- `image_grounding_summary`
+- `evidence_summary`
+- `judge_scores`
+- `approved_question_types`
+- `degraded`
 
-其中应该已经包含：
+这几个字段里，最重要的是：
 
-- image/table seed
-- vision 周边的一些局部邻居
+- `nodes / edges`
+  - downstream generator 真实消费的上下文
+- `approved_question_types`
+  - 告诉 `generate(method=auto)` 优先走哪类出题器
+- `judge_scores`
+  - 保留质量诊断信息
+- `image_grounding_summary`
+  - 保留“图像不可替代”的理由
 
-### 6.2 选 seed
+### 5.2 `candidate_bundle`
 
-`ValueAwareSubgraphSampler._select_seed_node()` 会优先找：
+`candidate_bundle` 是一个紧凑的 trace，不保留 chain-of-thought，只保留决策摘要：
 
-- `entity_type == IMAGE`
-- `entity_type == TABLE`
+- `candidate_id`
+- `intent`
+- `node_ids`
+- `edge_pairs`
+- `judge_scores`
+- `decision`
+- `rejection_reason`
 
-如果没有，再退化到 metadata 里带：
+它主要用来做：
 
-- `img_path`
-- `table_caption`
+- 调试
+- 离线分析
+- 失败样本回放
 
-的节点。
+### 5.3 `edit_trace`
 
-### 6.3 恢复 seed 的文档归属
+`v2` 的 `edit_trace` 是结构化编辑轨迹，每一轮会记录：
 
-这里有一个非常重要的实现细节：
+- `round_index`
+- `degraded`
+- `actions`
 
-当前 KG 是**融合图**，不是按文档隔离的图。
+每个 action 只记录结构化字段，例如：
 
-所以 sampler 不能假设“邻近节点一定属于同一文档”，而是需要显式恢复 seed 的归属范围。
+- `action_type`
+- `node_id` / `src_id` / `tgt_id`
+- `intent` / `technical_focus`
+- `applied`
+- `ignored_reason`
+- `before_units`
+- `after_units`
 
-当前做法是：
+这里不会保存长推理文本，只保存足够做调试和回放的操作摘要。
 
-1. 优先取 seed node 自身的：
-   - `source_id`
-   - `metadata.source_trace_id`
-2. 只有 seed 本身拿不到归属信息时，才退化到 seed 相邻边的 `source_id`
+### 5.4 `judge_trace`
 
-这一步的作用是建立 `seed_source_ids`，后续所有候选节点都要尽量和它重合。
+`judge_trace` 记录每轮 judge 的结构化反馈：
 
-### 6.4 恢复 local core
+- 当前 round
+- scorecard
+- `sufficient`
+- `needs_expansion`
+- `rejection_reason`
+- `suggested_actions`
 
-当前实现不再把“同源近邻”直接当作 core，而是显式恢复：
+它的作用是把“为什么继续编辑 / 为什么扩图 / 为什么停止”保存在 artifact 里。
 
-- `seed_chunk_ids`
-- `local_core_node_ids`
-- `local_core_edge_pairs`
+### 5.5 `candidate_states`
 
-规则是：
+`candidate_states` 是每轮编辑后 state 的快照，便于分析：
 
-- `seed_chunk_ids` 优先取 seed metadata 里的 `source_trace_id`
-- 再补 seed node 的 `source_id`
-- `local core` 只吸收那些 `node.source_id` 或 `edge.source_id` 明确包含 `seed_chunk_ids` 的节点/边
+- candidate 是怎么一步步长出来的
+- 哪一轮开始出现偏题或冗余
+- 哪一轮达到可接受质量
 
-也就是说，local core 对应的是：
+## 6. 生成阶段怎么消费这个 artifact
 
-**由该 image/table chunk 自身抽出的原生 mini-KG**
+`GenerateService(method=auto)` 现在只消费 `selected_subgraphs`。
 
-### 6.5 候选扩展
+### 6.1 新路径：优先消费 `selected_subgraphs`
 
-agent 的搜索空间不再是“任意当前邻居”，而是“基于 local core 的 extension 选择”。
+如果输入里有 `selected_subgraphs`，那么 generator 会：
 
-第一轮候选只能由 local core 触发，后续才允许从已接受的 extension 继续走。
+1. 遍历每个 selected subgraph
+2. 看它的 `approved_question_types`
+3. 把它映射到一个有优先级的 generator 列表
+4. 以“每个 selected subgraph”为单位执行 QA budget
+5. 在不同 generator 返回结果之间做强去重
+6. 把 artifact 元数据和最终使用的 `generator_key` 带回最终结果
 
-当前 extension 会被标成这些角色之一：
+目前 question type 到 generator 的大致映射是：
 
-- `bridge`
-- `support`
-- `comparison`
-- `conclusion`
+- 含 `multi_hop / causal / constraint`
+  - 优先走 `multi_hop`
+- 含 `chart / diagram / parameter / comparison / interpretation`
+  - 优先走 `aggregated`
+- 其他
+  - 退到 `vqa`
 
-### 6.6 动作空间
+`v2` 虽然会输出更多 trace 字段，但生成阶段第一版仍然只依赖兼容字段，所以它能直接接上现有 `generate(method=auto)`。
 
-从概念上看，当前 agent 的动作空间可以理解成：
+## 7. 当前支持的 question family
 
-- 保留 local core
-- 添加 bridge node
-- 添加 support fact
-- 添加 comparison branch
-- 添加 conclusion node
-- reject candidate
-- stop and commit
+当前 v1 主要支持这些技术题型：
 
-虽然实现还不是自由 LLM agent，但这个动作空间已经比固定 partition 更接近真正的 agent search。
-当前关键控制参数是：
+- `chart_diagram_interpretation`
+- `parameter_relation_understanding`
+- `local_constraint_or_causal_interpretation`
+- `light_multi_hop_technical_reasoning`
+
+degraded path 主要使用：
+
+- `conservative_chart_interpretation`
+- `single_hop_parameter_readout`
+
+当前明确不鼓励的类型包括：
+
+- 通用视觉定位题
+- 没有硬证据支撑的开放式 why 问题
+- 很长的、弱图像依赖的多跳推理
+
+## 8. 关键配置项
+
+在 `agentic_subgraph_reasoning_config.yaml` 里，`sample_subgraph.params` 现在最重要的参数是：
 
 - `max_units`
-- `max_steps`
+  - 单个 candidate subgraph 的预算上限
 - `max_hops_from_seed`
-- `min_score_improvement`
-
-## 7. 打分逻辑
-
-当前实现采用“先过硬约束，再做软排序”。
-
-### 7.1 硬约束
-
-在 `_evaluate_candidate()` 中，候选子图必须同时满足：
-
-- `budget_valid`
-  - 节点数 + 边数不能超过预算
-- `vision_centered`
-  - 不只是 seed 在图里
-  - 还必须保留足够的 local core
-- `answerable`
-  - 要能形成 local-core 驱动的聚合或桥接结构
-- `evidence_sufficient`
-  - local core 和 extension 都要有足够 evidence
-- `coherent`
-  - local core 必须由 `seed_chunk_ids` 支撑
-  - extension 必须通过 local core 接入，而不是替代 local core 成为新中心
-
-只要有一项不通过，这个候选子图就直接被淘汰。
-
-### 7.2 软目标
-
-通过硬约束后，再计算：
-
-- `training_value`
-- `visual_dependence`
-- `reasoning_richness`
-- `mismatch_penalty`
-
-最终分数是：
-
-```text
-training_value
-+ visual_dependence
-+ reasoning_richness
-- mismatch_penalty
-```
-
-#### `training_value`
-
-当前仍是启发式实现，但已经不只看关键词，也会按 extension 角色加分：
-
-- `bridge`
-- `support`
-- `comparison`
-- `conclusion`
-
-#### `visual_dependence`
-
-这部分主要看：
-
-- 子图中有多少边仍直接连着 seed
-- seed 是否真的是 image/table 节点
-- seed metadata 是否带 `img_path` / `table_caption`
-
-作用是避免 sampler 退化成“普通文本 QA 子图选择器”。
-
-#### `reasoning_richness`
-
-这部分现在更强调结构角色：
-
-- 是否存在 `bridge -> conclusion` 链
-- 是否存在 comparison 分支
-- 是否形成围绕 local core 的多事实簇
-
-#### `mismatch_penalty`
-
-惩罚项除了旧的缺证据/泛化关系外，还会惩罚：
-
-- extension 节点数量反过来压过 local core
-- extension 在结构上比 local core 更中心
-
-## 8. 停止规则
-
-这条链路最关键的不是“能扩多远”，而是“什么时候应该停”。
-
-当前 stopping rule 是：
-
-- 每轮都选当前得分最高的候选扩展
-- 如果它对当前最优结果的增益不超过 `min_score_improvement`
-- 就停止搜索
-
-也就是说，它不追求：
-
-- 最大社区
-- 最远信息
-- 最多节点
-
-它追求的是：
-
-**只在价值增益明显时才继续扩展。**
-
-## 9. `task_type` 如何判定
-
-当前实现会自动决定最终子图更适合：
-
-- `aggregated`
-- `multi_hop`
-
-逻辑在 `_select_task_type()` 中。
-
-### 判成 `multi_hop`
-
-需要出现：
-
-- `local core -> bridge -> conclusion/support`
-
-也就是 bridge 不能只是存在，而要对最终结构不可省略。
-
-### 判成 `aggregated`
-
-更像围绕 local core 的多事实主题簇：
-
-- comparison 分支
-- 多个 support/conclusion 分支
-- 价值来自聚合，而不是单链推理
-
-这意味着当前第一版偏向保守：
-
-- 只有在结构上已经比较像多跳链时才会给 `multi_hop`
-- 否则更愿意把它当成主题聚合子图
-
-## 10. 输出数据结构
-
-`sample_subgraph` 的输出至少包含：
-
-- `seed_node_id`
-- `nodes`
-- `edges`
-- `task_type`
-- `subgraph_score`
-- `selection_rationale`
-- `value_breakdown`
-- `candidate_subgraph`
-- `task_type_reason`
-- `local_core_subgraph`
-- `extension_subgraph`
-- `node_roles`
-
-其中：
-
-- `selection_rationale`
-  - 记录了任务类型、搜索步数、得分、各个硬约束是否通过
-- `value_breakdown`
-  - 记录了关键打分项
-
-这些字段会继续被 `generate(method=auto)` 带到最终结果里，方便审计。
-
-## 11. `generate(method=auto)` 做了什么
-
-当前 `GenerateService` 新增了 `method: auto`。
-
-行为是：
-
-1. 看输入 batch 里的 `task_type`
-2. 若是 `aggregated`，调用 `AggregatedVQAGenerator`
-3. 若是 `multi_hop`，调用 `MultiHopVQAGenerator`
-4. 若缺省，则默认回退到 `aggregated`
-
-同时会把这些 sampler 元信息一起写进输出：
-
-- `task_type`
-- `seed_node_id`
-- `selection_rationale`
-- `value_breakdown`
-- `subgraph_score`
-- `task_type_reason`
-- `local_core_subgraph`
-- `extension_subgraph`
-- `node_roles`
-- `seed_chunk_ids`
-
-所以这条链路不仅改变了子图选择，还把“为什么选这个子图”也留下来了。
-
-## 12. YAML 入口
-
-当前配套 YAML：
-
-- `examples/generate/generate_vqa/agentic_subgraph_reasoning_config.yaml`
-
-关键参数：
-
-```yaml
-sample_subgraph:
-  params:
-    max_units: 8
-    max_steps: 4
-    max_hops_from_seed: 4
-```
-
-以及：
-
-```yaml
-generate:
-  params:
-    method: auto
-```
-
-如果你要调这条链路，优先关注：
-
-- `partition.method_params.max_units_per_community`
-- `sample_subgraph.params.max_units`
-- `sample_subgraph.params.max_steps`
-- `sample_subgraph.params.max_hops_from_seed`
-
-## 13. 当前实现的边界与限制
-
-这部分很重要。
-
-### 12.1 当前不是自由 LLM agent
-
-虽然名字叫 agentic sampler，但当前第一版实现仍然是**启发式受控搜索**，不是：
-
-- 自由工具调用 LLM agent
-- 多轮 planner/executor/judge 体系
-- 可回退的显式动作轨迹系统
-
-它的 agentic 性主要体现在：
-
-- 逐步扩展
-- 逐步评估
-- 动态停止
-
-### 13.2 当前 graph 约束仍较弱
-
-目前主要依赖：
-
-- `source_id`
-- seed 对齐
-- hop 限制
-- evidence 数量
-- relation type 启发式惩罚
-
-它还没有：
-
-- 真正的路径语义校验
-- 更强的 cross-document disambiguation
-- learned reranker / reward model
-- 更细粒度的 table/image 结构化选择
-
-### 13.3 当前 training value 仍是启发式
-
-`training_value` 还不是 learned score，也没有领域 schema。
-
-它目前更多是在做：
-
-- 关键词驱动的高价值信号近似
-
-所以这是一个可用的第一版，但还不是最终形态。
-
-## 14. 当前代码和目标模型的偏差
-
-即使这次已经引入了 `local core / extension / node_roles`，当前实现仍然还有一些偏启发式的地方：
-
-- extension role 仍是规则推断，不是 learned planner
-- coherent 仍主要依赖 `source_id` 和局部连接，不是真正的路径语义校验
-- `training_value` 仍是规则分，不是 learned score
-
-所以这条实现已经更接近正确心智模型，但还不是最终形态。
-
-## 15. 这条路线适合解决什么问题
-
-当前这条路线最适合：
-
-- 不满足于固定 partition 的一刀切局部社区
-- 想在 budget 内让子图更“值钱”
-- 又不想直接把整个系统升级成完全自由的 agent
-
-它尤其适合：
-
-- `aggregated`
-- `multi_hop`
-
-因为这两类任务都比 `atomic` 更依赖：
-
-- 子图选择质量
-- 结构闭合程度
-- 训练价值与复杂度之间的平衡
-
-## 16. 后续可演进方向
-
-这条链路往后自然可以继续增强：
-
-1. 把当前启发式候选扩展改成真正的 tool-using planner
-2. 引入路径级语义约束，而不只看 hop 和 source overlap
-3. 把 `training_value` 变成 learned scorer 或 judge model
-4. 引入 table 细粒度结构，以支持更强的参数/比较采样
-5. 引入显式 negative mining，让 mismatch penalty 更稳定
-
-但在当前仓库阶段，这个第一版已经完成了很关键的一步：
-
-**把“固定 partition”升级成了“价值驱动的受控子图选择”。**
+  - 收集 neighborhood 时允许离 seed 的最远 hop
+- `candidate_pool_size`
+  - planner 最多提出多少 candidate intent
+- `max_selected_subgraphs`
+  - 最多保留多少个 final selected subgraph
+- `max_vqas_per_selected_subgraph`
+  - 每个 selected subgraph 最多允许 downstream 保留多少道 QA
+- `allow_degraded`
+  - primary 全失败时，是否允许跑 degraded path
+- `judge_pass_threshold`
+  - Judge 的总分通过阈值
+- `theme_split_threshold`
+  - 多主题分裂时的相似度 / 分数差门槛
+
+在 `agentic_subgraph_reasoning_v2_config.yaml` 里，`sample_subgraph_v2.params` 现在最重要的参数是：
+
+- `hard_cap_units`
+  - 安全上限，限制 candidate 的 `node_count + edge_count`
+- `max_rounds`
+  - 单个 session 最多允许多少编辑回合
+- `max_vqas_per_selected_subgraph`
+  - 每个 selected subgraph 最多允许 downstream 保留多少道 QA
+- `allow_degraded`
+  - 主路径失败后是否允许重启 degraded session
+- `judge_pass_threshold`
+  - Judge 的总分通过阈值
+
+默认偏向离线质量优先，而不是低延迟在线推理。
+
+## 9. 当没有 VLM 可用时会发生什么
+
+当前实现已经不再保留 heuristic fallback。
+
+也就是说：
+
+- `sample_subgraph` 依赖 `init_llm("synthesizer")`
+- planner / assembler / judge 都必须由 VLM 驱动
+- 如果没有可用的 synthesizer VLM，`SampleSubgraphService` 会直接在初始化时失败
+
+这是一个有意的设计选择：
+
+- 我们希望 `sample_subgraph` 是一个真正的 agentic stage
+- 而不是“有模型时走 agent，没有模型时退回规则系统”
+
+同样地：
+
+- `sample_subgraph_v2` 也依赖 `init_llm("synthesizer")`
+- 如果没有可用 VLM，`SampleSubgraphV2Service` 会在初始化时失败
+
+## 10. 如何理解当前 sampler
+
+更推荐把当前 `sample_subgraph` 理解成下面这个过程：
+
+- 围绕一个 `image seed` 收集受控 neighborhood
+- 让 planner 提出少量值得尝试的技术 intent
+- 让 assembler 在现有 KG 内拼出 candidate
+- 让 judge 做结构化验收
+- 输出 `selected_subgraphs` 作为正式结果
+- 输出 `candidate_bundle` 作为调试与分析接口
+
+这里的核心工作单元是：
+
+- `candidate`
+  - 一次具体的构图尝试
+- `selected_subgraphs`
+  - 最终验收通过、会交给 generator 的正式子图
+- `candidate_bundle`
+  - 紧凑的决策 trace
+
+更推荐把 `sample_subgraph_v2` 理解成下面这个过程：
+
+- 从 image seed 初始化一个空的 candidate state
+- 让 editor 通过显式图编辑动作逐步生长这个 state
+- 让 judge 决定当前 state 是否已经 sufficient
+- 需要时扩到 2-hop
+- 需要时切换 degraded session
+- 输出兼容生成器的正式子图，加上结构化 trace
+
+## 11. 当前限制
+
+当前实现仍然有一些现实限制：
+
+- v1 主要面向 `image seed`
+- `table` 虽然概念上支持，但主路径仍以 image-like asset 为中心
+- planner / assembler / judge 目前都是“单轮 JSON 协议”，还不是更复杂的 tool-using runtime
+- generator 映射规则目前还是轻量规则，不是完整 learned policy
+- generator 路由仍是 schema-driven mapping，不是 learned router
+- `v2` 目前只做单 candidate 的 editing session，还没有并行多 editor worker
+- `v2` 的扩图策略目前只支持 `1-hop -> 2-hop` 一次扩张
+- `v2` 的停止条件仍然主要依赖 judge，而不是 learned stopping policy
+
+## 12. 推荐的阅读顺序
+
+如果你想从代码角度快速理解整条链路，推荐按这个顺序看：
+
+1. `graphgen/operators/sample_subgraph/sample_subgraph_service.py`
+2. `graphgen/models/subgraph_sampler/agentic_vlm_sampler.py`
+3. `graphgen/operators/sample_subgraph_v2/sample_subgraph_v2_service.py`
+4. `graphgen/models/subgraph_sampler/graph_editing_vlm_sampler.py`
+5. `graphgen/models/subgraph_sampler/artifacts.py`
+6. `graphgen/models/subgraph_sampler/v2_artifacts.py`
+7. `graphgen/models/subgraph_sampler/prompts.py`
+8. `graphgen/models/subgraph_sampler/v2_prompts.py`
+9. `graphgen/operators/generate/generate_service.py`
+10. `tests/integration_tests/operators/test_sample_subgraph_service.py`
+11. `tests/integration_tests/operators/test_sample_subgraph_v2_service.py`
+
+对应地：
+
+- `v1 service / sampler`
+  - 负责 baseline agentic pipeline
+- `v2 service / sampler`
+  - 负责 graph-editing agent pipeline
+- `artifacts / v2_artifacts`
+  - 负责 schema 与 trace/state 定义
+- `prompts / v2_prompts`
+  - 负责 agent prompt contract
+- `generate service`
+  - 负责 artifact -> QA 的映射
+- tests
+  - 负责说明两条链路的当前预期行为

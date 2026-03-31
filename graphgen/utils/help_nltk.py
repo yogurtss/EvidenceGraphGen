@@ -9,7 +9,10 @@ warnings.filterwarnings(
     module=r"jieba\._compat"
 )
 # pylint: disable=wrong-import-position
-import jieba
+try:
+    import jieba
+except ModuleNotFoundError:  # pragma: no cover - environment dependent
+    jieba = None
 
 
 class NLTKHelper:
@@ -33,7 +36,8 @@ class NLTKHelper:
             "nltk_data"
         )
         nltk.data.path.append(self._nltk_path)
-        jieba.initialize()
+        if jieba is not None:
+            jieba.initialize()
 
         self._ensure_nltk_data("stopwords")
         self._ensure_nltk_data("punkt_tab")
@@ -57,6 +61,8 @@ class NLTKHelper:
         if lang not in self.SUPPORTED_LANGUAGES:
             raise ValueError(f"Language {lang} is not supported.")
         if lang == "zh":
-            return jieba.lcut(text)
+            if jieba is not None:
+                return jieba.lcut(text)
+            return list(text)
 
         return nltk.word_tokenize(text)

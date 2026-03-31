@@ -49,26 +49,23 @@ nodes:
       replicas: 1
       batch_size: 128
 
-  - id: sample_subgraph
-    op_name: sample_subgraph
+  - id: sample_subgraph_v2
+    op_name: sample_subgraph_v2
     type: aggregate
     dependencies:
       - build_grounded_tree_kg
     params:
-      max_units: 8
-      max_hops_from_seed: 4
-      candidate_pool_size: 3
-      max_selected_subgraphs: 1
+      hard_cap_units: 12
+      max_rounds: 6
       max_vqas_per_selected_subgraph: 2
       allow_degraded: true
       judge_pass_threshold: 0.68
-      theme_split_threshold: 0.18
 
   - id: generate
     op_name: generate
     type: map_batch
     dependencies:
-      - sample_subgraph
+      - sample_subgraph_v2
     execution_params:
       replicas: 1
       batch_size: 128
