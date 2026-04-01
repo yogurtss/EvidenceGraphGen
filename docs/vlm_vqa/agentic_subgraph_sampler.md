@@ -2,12 +2,16 @@
 
 ## 导读
 
-本文说明当前两条 agentic subgraph sampling 链路：
+本文只说明当前两条 agentic subgraph sampling 链路：
 
 ```text
-partition -> sample_subgraph -> generate(method=auto)
-partition -> sample_subgraph_v2 -> generate(method=auto)
+build_grounded_tree_kg -> sample_subgraph -> generate(method=auto)
+build_grounded_tree_kg -> sample_subgraph_v2 -> generate(method=auto)
 ```
+
+如果你想看 `schema_guided_subgraph`，请单独阅读：
+
+- `docs/vlm_vqa/schema_guided_subgraph.md`
 
 它们都面向技术文档图像，只是内部策略不同：
 
@@ -49,7 +53,6 @@ read
 -> tree_construct
 -> tree_chunk
 -> build_grounded_tree_kg
--> partition(anchor_bfs, image/table)
 -> sample_subgraph
 -> generate(method=auto)
 ```
@@ -61,15 +64,14 @@ read
 -> tree_construct
 -> tree_chunk
 -> build_grounded_tree_kg
--> partition(anchor_bfs, image/table)
 -> sample_subgraph_v2
 -> generate(method=auto)
 ```
 
 各阶段职责分成两层：
 
-- `partition`
-  - 只负责给出一个 vision-centered 的初始 seed community
+- `build_grounded_tree_kg`
+  - 负责把 image / text / table 证据写入同一个 grounded KG
 - `sample_subgraph`
   - `v1` 围绕 image seed 做单轮 candidate construction
   - 产出显式 artifact，而不是直接出题

@@ -10,13 +10,14 @@
 
 1. `docs/vlm_vqa/architecture.md`
 2. `docs/vlm_vqa/agentic_subgraph_sampler.md`
-3. `docs/vlm_vqa/research.md`
-4. `docs/vlm_vqa/roadmap.md`
-5. `docs/vlm_vqa/plans/kg_grounding.md`
-6. `docs/vlm_vqa/plans/multimodal_alignment.md`
-7. `docs/vlm_vqa/plans/question_depth.md`
-8. `docs/vlm_vqa/plans/eval_benchmark.md`
-9. `docs/vlm_vqa/execution/p0_checklist.md`
+3. `docs/vlm_vqa/schema_guided_subgraph.md`
+4. `docs/vlm_vqa/research.md`
+5. `docs/vlm_vqa/roadmap.md`
+6. `docs/vlm_vqa/plans/kg_grounding.md`
+7. `docs/vlm_vqa/plans/multimodal_alignment.md`
+8. `docs/vlm_vqa/plans/question_depth.md`
+9. `docs/vlm_vqa/plans/eval_benchmark.md`
+10. `docs/vlm_vqa/execution/p0_checklist.md`
 
 目录含义：
 
@@ -24,6 +25,8 @@
   - 基于当前代码的整体架构、生成链路与任务分工说明
 - `agentic_subgraph_sampler.md`
   - value-aware agentic subgraph sampler 的目标、实现细节与配置入口
+- `schema_guided_subgraph.md`
+  - schema-guided subgraph sampler 的设计定位、执行逻辑与配置入口
 - `research.md`
   - 当前 GraphGen VQA / Atomic QA 原理研究
 - `roadmap.md`

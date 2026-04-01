@@ -35,18 +35,29 @@ YAML config
 输入解析 -> chunk / tree_chunk -> build_kg / build_tree_kg -> partition -> generate
 ```
 
-当前仓库还新增了一条可选增强链路，用于在 vision-centered 初始社区之上做更高价值的子图选择：
+当前仓库还新增了三条可选增强链路，用于在全局融合 KG 上直接扫描 `image seed`，做更高价值的子图选择：
 
 ```text
-partition -> sample_subgraph -> generate(method=auto)
+build_grounded_tree_kg -> sample_subgraph -> generate(method=auto)
+build_grounded_tree_kg -> sample_subgraph_v2 -> generate(method=auto)
+build_grounded_tree_kg -> schema_guided_subgraph -> generate(method=auto)
 ```
 
-这里的 `sample_subgraph` 不直接生成 QA，而是先固定：
+这里的 `sample_subgraph` / `sample_subgraph_v2` / `schema_guided_subgraph` 都不直接生成 QA，而是先固定：
 
-- `vision anchor`
-- `modality-local extracted core`
+- `image seed`
+- `seed-local multimodal evidence`
 
 再在融合后的全局 KG 中按 `source_id`、seed chunk 和预算约束挑选一个更适合 `aggregated` 或 `multi_hop` 的单个目标子图。
+
+三者的差异主要在“如何选图”：
+
+- `sample_subgraph`
+  - LLM 做单轮 intent planning + candidate assembly
+- `sample_subgraph_v2`
+  - LLM 做 stateful graph editing
+- `schema_guided_subgraph`
+  - LLM 做 schema-aware intent planning，具体 retrieval broadening 由代码按固定阶段控制
 
 `GenerateService` 是所有 QA/VQA 任务的统一出口。它根据 `method` 动态选择：
 

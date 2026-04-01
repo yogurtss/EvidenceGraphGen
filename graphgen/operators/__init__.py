@@ -10,6 +10,7 @@ from .quiz import QuizService
 from .read import read
 from .rephrase import RephraseService
 from .sample_subgraph import SampleSubgraphService
+from .schema_guided_subgraph import SchemaGuidedSubgraphService
 from .sample_subgraph_v2 import SampleSubgraphV2Service
 from .search import SearchService
 from .tree_pipeline import (
@@ -37,6 +38,7 @@ operators = {
     "rephrase": RephraseService,
     "filter": FilterService,
     "sample_subgraph": SampleSubgraphService,
+    "schema_guided_subgraph": SchemaGuidedSubgraphService,
     "sample_subgraph_v2": SampleSubgraphV2Service,
     "structure_analyze": StructureAnalyzeService,
     "hierarchy_generate": HierarchyGenerateService,

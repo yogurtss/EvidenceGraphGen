@@ -1,0 +1,82 @@
+global_params:
+  working_dir: cache
+  graph_backend: kuzu
+  kv_backend: rocksdb
+
+nodes:
+  - id: read
+    op_name: read
+    type: source
+    dependencies: []
+    params:
+      input_path:
+        - tests/fixtures/tree_vqa_demo.md
+
+  - id: structure_analyze
+    op_name: structure_analyze
+    type: map_batch
+    dependencies:
+      - read
+
+  - id: hierarchy_generate
+    op_name: hierarchy_generate
+    type: map_batch
+    dependencies:
+      - structure_analyze
+
+  - id: tree_construct
+    op_name: tree_construct
+    type: map_batch
+    dependencies:
+      - hierarchy_generate
+
+  - id: tree_chunk
+    op_name: tree_chunk
+    type: map_batch
+    dependencies:
+      - tree_construct
+    params:
+      chunk_size: 1024
+      chunk_overlap: 100
+      split_text_nodes: false
+
+  - id: build_grounded_tree_kg
+    op_name: build_grounded_tree_kg
+    type: map_batch
+    dependencies:
+      - tree_chunk
+    execution_params:
+      replicas: 1
+      batch_size: 128
+
+  - id: schema_guided_subgraph
+    op_name: schema_guided_subgraph
+    type: aggregate
+    dependencies:
+      - build_grounded_tree_kg
+    params:
+      candidate_pool_size: 3
+      max_selected_subgraphs: 1
+      max_vqas_per_selected_subgraph: 2
+      initial_hops: 1
+      max_hops_after_reflection: 2
+      hard_cap_units: 12
+      section_scoped: true
+      same_source_only: true
+      allow_type_relaxation: true
+      allow_degraded: true
+      judge_pass_threshold: 0.68
+      debug: false
+
+  - id: generate
+    op_name: generate
+    type: map_batch
+    dependencies:
+      - schema_guided_subgraph
+    execution_params:
+      replicas: 1
+      batch_size: 128
+    save_output: true
+    params:
+      method: auto
+      data_format: ChatML
