@@ -400,6 +400,38 @@ def test_agentic_sampler_builds_single_selected_subgraph(tmp_path: Path):
     assert any(node_id == "random_access_perf" for node_id, _ in selected["nodes"])
 
 
+def test_agentic_sampler_emits_debug_trace_when_enabled(tmp_path: Path):
+    storage = NetworkXStorage(
+        working_dir=str(tmp_path / "cache"),
+        namespace="graph_sampler_debug",
+    )
+    _build_graph(storage)
+    sampler = VLMSubgraphSampler(
+        storage,
+        _DummyLLM(planner_mode="single"),
+    )
+
+    result = __import__("asyncio").run(
+        sampler.sample(
+            (storage.get_all_nodes(), storage.get_all_edges()),
+            seed_node_id="image_seed",
+            debug=True,
+        )
+    )
+
+    trace = result["debug_trace"]
+    assert trace["sampler_version"] == "v1"
+    assert trace["final_status"] == "selected"
+    assert [step["step_index"] for step in trace["steps"]] == list(
+        range(1, len(trace["steps"]) + 1)
+    )
+    step_types = [step["step_type"] for step in trace["steps"]]
+    assert "neighborhood_collection" in step_types
+    assert "planner_intents" in step_types
+    assert "candidate_judgement" in step_types
+    assert step_types[-1] == "selection"
+
+
 def test_sample_subgraph_service_can_keep_multiple_themes(tmp_path: Path):
     graph_storage = NetworkXStorage(
         working_dir=str(tmp_path / "cache"),
@@ -502,6 +534,50 @@ def test_agentic_sampler_abstains_if_degraded_path_also_fails(tmp_path: Path):
     assert result["abstained"] is True
     assert result["selected_subgraphs"] == []
     assert len(result["candidate_bundle"]) >= 2
+
+
+def test_agentic_sampler_debug_trace_records_degraded_failure(tmp_path: Path):
+    storage = NetworkXStorage(
+        working_dir=str(tmp_path / "cache"),
+        namespace="graph_sampler_debug_fail",
+    )
+    _build_graph(storage)
+    sampler = VLMSubgraphSampler(
+        storage,
+        _DummyLLM(planner_mode="reject", degraded_success=False),
+        allow_degraded=True,
+    )
+
+    result = __import__("asyncio").run(
+        sampler.sample(
+            (storage.get_all_nodes(), storage.get_all_edges()),
+            seed_node_id="image_seed",
+            debug=True,
+        )
+    )
+
+    trace = result["debug_trace"]
+    assert trace["final_status"] == "abstained"
+    assert trace["steps"][-1]["status"] == "failed"
+    assert any(step["phase"] == "fallback" for step in trace["steps"])
+
+
+def test_agentic_sampler_omits_debug_trace_by_default(tmp_path: Path):
+    storage = NetworkXStorage(
+        working_dir=str(tmp_path / "cache"),
+        namespace="graph_sampler_no_debug",
+    )
+    _build_graph(storage)
+    sampler = VLMSubgraphSampler(storage, _DummyLLM())
+
+    result = __import__("asyncio").run(
+        sampler.sample(
+            (storage.get_all_nodes(), storage.get_all_edges()),
+            seed_node_id="image_seed",
+        )
+    )
+
+    assert "debug_trace" not in result
 
 
 def test_generate_service_consumes_selected_subgraphs_and_preserves_metadata(tmp_path: Path):
@@ -661,3 +737,35 @@ def test_sample_subgraph_service_requires_synthesizer_vlm(tmp_path: Path):
             assert "requires a configured synthesizer VLM" in str(exc)
         else:
             raise AssertionError("SampleSubgraphService should fail without a synthesizer VLM")
+
+
+def test_sample_subgraph_service_can_enable_debug_trace(tmp_path: Path):
+    graph_storage = NetworkXStorage(
+        working_dir=str(tmp_path / "cache"),
+        namespace="graph",
+    )
+    _build_graph(graph_storage)
+
+    def _init_storage(backend: str, working_dir: str, namespace: str):
+        if namespace == "graph":
+            return graph_storage
+        return _DummyKV()
+
+    with patch(
+        "graphgen.operators.sample_subgraph.sample_subgraph_service.init_storage",
+        side_effect=_init_storage,
+    ), patch(
+        "graphgen.operators.sample_subgraph.sample_subgraph_service.init_llm",
+        return_value=_DummyLLM(),
+    ):
+        service = SampleSubgraphService(
+            working_dir=str(tmp_path / "cache"),
+            kv_backend="json_kv",
+            graph_backend="networkx",
+            debug=True,
+        )
+
+    rows, _ = service.process([{"_trace_id": "build-grounded-tree-kg-1"}])
+
+    assert rows
+    assert "debug_trace" in rows[0]

@@ -18,6 +18,12 @@ from .constants import (
     ALLOWED_PRIMARY_QUESTION_TYPES,
     TECHNICAL_KEYWORDS,
 )
+from .debug_artifacts import (
+    DebugTrace,
+    snapshot_candidate_like,
+    snapshot_judge,
+    snapshot_neighborhood,
+)
 from .prompts import (
     build_assembler_prompt,
     build_candidate_prompt,
@@ -60,32 +66,84 @@ class VLMSubgraphSampler:
         batch: tuple[list[tuple[str, dict]], list[tuple[Any, Any, dict]]],
         *,
         seed_node_id: str,
+        debug: bool = False,
     ) -> dict:
         nodes, edges = batch
         seed_node = self.graph.get_node(seed_node_id) or {}
         image_path = self._extract_image_path(seed_node)
+        debug_trace = DebugTrace(sampler_version="v1", seed_node_id=seed_node_id) if debug else None
+        if debug_trace is not None:
+            debug_trace.add_step(
+                phase="setup",
+                step_type="seed_validation",
+                status="success" if seed_node_id and seed_node and image_path else "failed",
+                summary=(
+                    "Validated seed node and image asset."
+                    if seed_node_id and seed_node and image_path
+                    else "Seed node or image asset missing."
+                ),
+                snapshot={
+                    "seed_node_id": seed_node_id,
+                    "has_seed_node": bool(seed_node),
+                    "image_path": image_path,
+                },
+            )
         if not seed_node_id or not seed_node or not image_path:
-            return self._build_empty_result(
+            result = self._build_empty_result(
                 seed_node_id=seed_node_id,
                 image_path=image_path,
                 candidate_bundle=[],
                 degraded=False,
                 degraded_reason="missing_image_seed_or_asset",
             )
+            return self._attach_debug_trace(
+                result,
+                debug_trace=debug_trace,
+                final_status="abstained",
+                termination_reason="missing_image_seed_or_asset",
+            )
 
         seed_chunk_ids, seed_source_ids = self._collect_seed_scope(seed_node_id, nodes)
+        if debug_trace is not None:
+            debug_trace.add_step(
+                phase="setup",
+                step_type="seed_scope",
+                status="success",
+                summary="Collected provenance scope from the image seed.",
+                snapshot={
+                    "seed_chunk_ids": sorted(seed_chunk_ids),
+                    "seed_source_ids": sorted(seed_source_ids),
+                },
+            )
         neighborhood = self._collect_neighborhood(
             seed_node_id=seed_node_id,
             seed_source_ids=seed_source_ids,
             seed_chunk_ids=seed_chunk_ids,
         )
+        if debug_trace is not None:
+            debug_trace.add_step(
+                phase="setup",
+                step_type="neighborhood_collection",
+                status="success" if len(neighborhood["node_ids"]) > 1 else "failed",
+                summary=f"Collected neighborhood with {len(neighborhood['node_ids'])} nodes.",
+                snapshot=snapshot_neighborhood(
+                    neighborhood,
+                    hop=self.max_hops_from_seed,
+                ),
+            )
         if len(neighborhood["node_ids"]) <= 1:
-            return self._build_empty_result(
+            result = self._build_empty_result(
                 seed_node_id=seed_node_id,
                 image_path=image_path,
                 candidate_bundle=[],
                 degraded=False,
                 degraded_reason="insufficient_neighborhood",
+            )
+            return self._attach_debug_trace(
+                result,
+                debug_trace=debug_trace,
+                final_status="abstained",
+                termination_reason="insufficient_neighborhood",
             )
 
         primary_candidates = await self._build_candidates(
@@ -94,6 +152,7 @@ class VLMSubgraphSampler:
             image_path=image_path,
             neighborhood=neighborhood,
             degraded=False,
+            debug_trace=debug_trace,
         )
         accepted_primary = [c for c in primary_candidates if c.decision == "accepted"]
 
@@ -101,12 +160,22 @@ class VLMSubgraphSampler:
         final_candidates = primary_candidates
         degraded = False
         if not accepted_primary and self.allow_degraded:
+            if debug_trace is not None:
+                debug_trace.add_step(
+                    phase="fallback",
+                    step_type="degraded_retry",
+                    status="running",
+                    degraded=True,
+                    summary="Retrying candidate construction in degraded mode.",
+                    snapshot={"trigger": "no_candidate_passed_primary_judge"},
+                )
             degraded_candidates = await self._build_candidates(
                 seed_node_id=seed_node_id,
                 seed_node=seed_node,
                 image_path=image_path,
                 neighborhood=neighborhood,
                 degraded=True,
+                debug_trace=debug_trace,
             )
             final_candidates = primary_candidates + degraded_candidates
             accepted_primary = [
@@ -114,14 +183,52 @@ class VLMSubgraphSampler:
             ]
             degraded = bool(accepted_primary)
             degraded_reason = "fallback_to_conservative_chart_interpretation"
+            if debug_trace is not None:
+                debug_trace.add_step(
+                    phase="fallback",
+                    step_type="degraded_result",
+                    status="success" if degraded_candidates else "failed",
+                    degraded=True,
+                    summary=(
+                        "Completed degraded retry."
+                        if degraded_candidates
+                        else "Degraded retry produced no candidates."
+                    ),
+                    snapshot={
+                        "accepted_candidate_ids": [
+                            candidate.candidate_id
+                            for candidate in degraded_candidates
+                            if candidate.decision == "accepted"
+                        ],
+                        "candidate_count": len(degraded_candidates),
+                    },
+                )
 
         if not accepted_primary:
-            return self._build_empty_result(
+            result = self._build_empty_result(
                 seed_node_id=seed_node_id,
                 image_path=image_path,
                 candidate_bundle=[c.compact_bundle() for c in final_candidates],
                 degraded=False,
                 degraded_reason=degraded_reason or "no_candidate_passed_judge",
+            )
+            if debug_trace is not None:
+                debug_trace.add_step(
+                    phase="finalize",
+                    step_type="selection",
+                    status="failed",
+                    degraded=degraded,
+                    summary="No candidate passed the judge.",
+                    snapshot={
+                        "selected_candidate_ids": [],
+                        "candidate_bundle_size": len(final_candidates),
+                    },
+                )
+            return self._attach_debug_trace(
+                result,
+                debug_trace=debug_trace,
+                final_status="abstained",
+                termination_reason="no_candidate_passed_judge",
             )
 
         selected = self._select_candidates(accepted_primary)
@@ -130,7 +237,7 @@ class VLMSubgraphSampler:
             self._materialize_selected_subgraph(candidate).to_dict()
             for candidate in selected
         ]
-        return {
+        result = {
             "seed_node_id": seed_node_id,
             "seed_image_path": image_path,
             "selection_mode": selection_mode,
@@ -141,6 +248,24 @@ class VLMSubgraphSampler:
             "abstained": False,
             "max_vqas_per_selected_subgraph": self.max_vqas_per_selected_subgraph,
         }
+        if debug_trace is not None:
+            debug_trace.add_step(
+                phase="finalize",
+                step_type="selection",
+                status="success",
+                degraded=degraded,
+                summary=f"Selected {len(selected)} candidate subgraph(s).",
+                snapshot={
+                    "selection_mode": selection_mode,
+                    "selected_candidate_ids": [candidate.candidate_id for candidate in selected],
+                },
+            )
+        return self._attach_debug_trace(
+            result,
+            debug_trace=debug_trace,
+            final_status="selected",
+            termination_reason="selected_subgraphs_ready",
+        )
 
     async def _build_candidates(
         self,
@@ -150,6 +275,7 @@ class VLMSubgraphSampler:
         image_path: str,
         neighborhood: dict[str, Any],
         degraded: bool,
+        debug_trace: DebugTrace | None = None,
     ) -> list[SubgraphCandidate]:
         intents = await self._propose_intents(
             seed_node_id=seed_node_id,
@@ -158,6 +284,25 @@ class VLMSubgraphSampler:
             neighborhood=neighborhood,
             degraded=degraded,
         )
+        if debug_trace is not None:
+            debug_trace.add_step(
+                phase="planning",
+                step_type="planner_intents",
+                status="success" if intents else "failed",
+                degraded=degraded,
+                summary=f"Planner proposed {len(intents)} intent(s).",
+                snapshot={
+                    "candidate_pool_size": self.candidate_pool_size,
+                    "intents": [
+                        {
+                            "intent": intent.get("intent", ""),
+                            "technical_focus": intent.get("technical_focus", ""),
+                            "approved_question_types": list(intent.get("question_types", [])),
+                        }
+                        for intent in intents
+                    ],
+                },
+            )
         candidates: list[SubgraphCandidate] = []
         for index, intent in enumerate(intents[: self.candidate_pool_size], start=1):
             candidate = await self._assemble_candidate(
@@ -169,15 +314,44 @@ class VLMSubgraphSampler:
                 candidate_index=index,
             )
             if candidate is None:
-                candidates.append(
-                    self._build_rejected_candidate(
-                        candidate_index=index,
-                        intent=intent,
-                        degraded=degraded,
-                        reason="invalid_candidate_payload",
-                    )
+                rejected_candidate = self._build_rejected_candidate(
+                    candidate_index=index,
+                    intent=intent,
+                    degraded=degraded,
+                    reason="invalid_candidate_payload",
                 )
+                candidates.append(rejected_candidate)
+                if debug_trace is not None:
+                    debug_trace.add_step(
+                        phase="assembly",
+                        step_type="candidate_assembly",
+                        status="failed",
+                        degraded=degraded,
+                        summary=f"Assembler returned invalid payload for candidate-{index}.",
+                        snapshot=snapshot_candidate_like(
+                            candidate_id=rejected_candidate.candidate_id,
+                            intent=rejected_candidate.intent,
+                            technical_focus=rejected_candidate.technical_focus,
+                            approved_question_types=rejected_candidate.approved_question_types,
+                        ),
+                    )
                 continue
+            if debug_trace is not None:
+                debug_trace.add_step(
+                    phase="assembly",
+                    step_type="candidate_assembly",
+                    status="success",
+                    degraded=degraded,
+                    summary=f"Assembled {candidate.candidate_id}.",
+                    snapshot=snapshot_candidate_like(
+                        candidate_id=candidate.candidate_id,
+                        intent=candidate.intent,
+                        technical_focus=candidate.technical_focus,
+                        approved_question_types=candidate.approved_question_types,
+                        node_ids=candidate.node_ids,
+                        edge_pairs=candidate.edge_pairs,
+                    ),
+                )
             scorecard, rejection_reason = await self._judge_candidate(
                 seed_node_id=seed_node_id,
                 image_path=image_path,
@@ -188,6 +362,31 @@ class VLMSubgraphSampler:
             candidate.judge_scores = scorecard
             candidate.decision = "accepted" if scorecard.passes else "rejected"
             candidate.rejection_reason = rejection_reason if not scorecard.passes else ""
+            if debug_trace is not None:
+                debug_trace.add_step(
+                    phase="judge",
+                    step_type="candidate_judgement",
+                    status="success" if scorecard.passes else "failed",
+                    degraded=degraded,
+                    summary=(
+                        f"Judge {'accepted' if scorecard.passes else 'rejected'} "
+                        f"{candidate.candidate_id}."
+                    ),
+                    snapshot={
+                        **snapshot_candidate_like(
+                            candidate_id=candidate.candidate_id,
+                            intent=candidate.intent,
+                            technical_focus=candidate.technical_focus,
+                            approved_question_types=candidate.approved_question_types,
+                            node_ids=candidate.node_ids,
+                            edge_pairs=candidate.edge_pairs,
+                        ),
+                        **snapshot_judge(
+                            scorecard=scorecard,
+                            rejection_reason=rejection_reason,
+                        ),
+                    },
+                )
             candidates.append(candidate)
         candidates.sort(
             key=lambda item: item.judge_scores.overall_score,
@@ -443,6 +642,23 @@ class VLMSubgraphSampler:
             "abstained": True,
             "max_vqas_per_selected_subgraph": self.max_vqas_per_selected_subgraph,
         }
+
+    @staticmethod
+    def _attach_debug_trace(
+        result: dict[str, Any],
+        *,
+        debug_trace: DebugTrace | None,
+        final_status: str,
+        termination_reason: str,
+    ) -> dict[str, Any]:
+        if debug_trace is None:
+            return result
+        debug_trace.finalize(
+            final_status=final_status,
+            termination_reason=termination_reason,
+        )
+        result["debug_trace"] = debug_trace.to_dict()
+        return result
 
     def _build_rejected_candidate(
         self,

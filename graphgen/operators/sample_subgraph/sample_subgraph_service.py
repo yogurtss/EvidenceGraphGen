@@ -22,6 +22,7 @@ class SampleSubgraphService(BaseOperator):
         allow_degraded: bool = True,
         judge_pass_threshold: float = 0.68,
         theme_split_threshold: float = 0.18,
+        debug: bool = False,
     ):
         super().__init__(
             working_dir=working_dir,
@@ -51,6 +52,7 @@ class SampleSubgraphService(BaseOperator):
             judge_pass_threshold=judge_pass_threshold,
             theme_split_threshold=theme_split_threshold,
         )
+        self.debug = bool(debug)
 
     def process(self, batch: list) -> Tuple[list, dict]:
         self.graph_storage.reload()
@@ -66,6 +68,7 @@ class SampleSubgraphService(BaseOperator):
                 sampled = await self.sampler.sample(
                     (nodes, edges),
                     seed_node_id=seed_node_id,
+                    debug=self.debug,
                 )
                 sampled["_trace_id"] = self.get_trace_id(sampled)
                 results.append(sampled)

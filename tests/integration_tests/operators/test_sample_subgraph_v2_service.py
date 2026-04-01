@@ -520,6 +520,32 @@ def test_v2_sampler_builds_single_selected_subgraph_and_emits_v2_fields(tmp_path
     assert result["termination_reason"] == "judge_marked_sufficient"
 
 
+def test_v2_sampler_emits_debug_trace_when_enabled(tmp_path: Path):
+    storage = NetworkXStorage(working_dir=str(tmp_path / "cache"), namespace="graph")
+    _build_graph(storage)
+    sampler = GraphEditingVLMSubgraphSampler(storage, _DummyV2LLM("expand"))
+
+    result = __import__("asyncio").run(
+        sampler.sample(
+            (storage.get_all_nodes(), storage.get_all_edges()),
+            seed_node_id="image_seed",
+            debug=True,
+        )
+    )
+
+    trace = result["debug_trace"]
+    assert trace["sampler_version"] == "v2"
+    assert trace["final_status"] == "selected"
+    assert [step["step_index"] for step in trace["steps"]] == list(
+        range(1, len(trace["steps"]) + 1)
+    )
+    step_types = [step["step_type"] for step in trace["steps"]]
+    assert "edit_round" in step_types
+    assert "candidate_judgement" in step_types
+    assert "neighborhood_expansion" in step_types
+    assert step_types[-1] == "selection"
+
+
 def test_v2_sampler_uses_one_hop_without_expansion_when_sufficient(tmp_path: Path):
     storage = NetworkXStorage(working_dir=str(tmp_path / "cache"), namespace="graph")
     _build_graph(storage)
@@ -637,6 +663,47 @@ def test_v2_sampler_respects_hard_cap_and_records_ignored_actions(tmp_path: Path
     )
 
 
+def test_v2_sampler_debug_trace_includes_action_failures(tmp_path: Path):
+    storage = NetworkXStorage(working_dir=str(tmp_path / "cache"), namespace="graph")
+    _build_graph(storage)
+    sampler = GraphEditingVLMSubgraphSampler(
+        storage,
+        _DummyV2LLM("hard_cap"),
+        hard_cap_units=4,
+        max_rounds=1,
+        allow_degraded=False,
+    )
+
+    result = __import__("asyncio").run(
+        sampler.sample(
+            (storage.get_all_nodes(), storage.get_all_edges()),
+            seed_node_id="image_seed",
+            debug=True,
+        )
+    )
+
+    edit_steps = [
+        step for step in result["debug_trace"]["steps"] if step["step_type"] == "edit_round"
+    ]
+    assert edit_steps
+    assert any(
+        action["ignored_reason"] == "hard_cap_exceeded"
+        for action in edit_steps[-1]["snapshot"]["actions"]
+    )
+
+
+def test_v2_sampler_omits_debug_trace_by_default(tmp_path: Path):
+    storage = NetworkXStorage(working_dir=str(tmp_path / "cache"), namespace="graph")
+    _build_graph(storage)
+    sampler = GraphEditingVLMSubgraphSampler(storage, _DummyV2LLM("single"))
+
+    result = __import__("asyncio").run(
+        sampler.sample((storage.get_all_nodes(), storage.get_all_edges()), seed_node_id="image_seed")
+    )
+
+    assert "debug_trace" not in result
+
+
 def test_v2_service_and_generate_auto_integrate(tmp_path: Path):
     graph_storage = NetworkXStorage(working_dir=str(tmp_path / "cache"), namespace="graph")
     _build_graph(graph_storage)
@@ -684,3 +751,32 @@ def test_v2_service_and_generate_auto_integrate(tmp_path: Path):
     qa_rows, _ = generate_service.process(rows)
     assert qa_rows
     assert all(row["subgraph_id"] == "candidate-1" for row in qa_rows)
+
+
+def test_v2_service_can_enable_debug_trace(tmp_path: Path):
+    graph_storage = NetworkXStorage(working_dir=str(tmp_path / "cache"), namespace="graph")
+    _build_graph(graph_storage)
+
+    def _init_storage(backend: str, working_dir: str, namespace: str):
+        if namespace == "graph":
+            return graph_storage
+        return _DummyKV()
+
+    with patch(
+        "graphgen.operators.sample_subgraph_v2.sample_subgraph_v2_service.init_storage",
+        side_effect=_init_storage,
+    ), patch(
+        "graphgen.operators.sample_subgraph_v2.sample_subgraph_v2_service.init_llm",
+        return_value=_DummyV2LLM("single"),
+    ):
+        service = SampleSubgraphV2Service(
+            working_dir=str(tmp_path / "cache"),
+            kv_backend="json_kv",
+            graph_backend="networkx",
+            debug=True,
+        )
+
+    rows, _ = service.process([{"_trace_id": "build-grounded-tree-kg-1"}])
+
+    assert rows
+    assert "debug_trace" in rows[0]

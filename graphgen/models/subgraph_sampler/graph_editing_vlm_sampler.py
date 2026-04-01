@@ -14,6 +14,12 @@ from .artifacts import (
     split_source_ids,
 )
 from .constants import ALLOWED_DEGRADED_QUESTION_TYPES, ALLOWED_PRIMARY_QUESTION_TYPES
+from .debug_artifacts import (
+    DebugTrace,
+    snapshot_candidate_like,
+    snapshot_judge,
+    snapshot_neighborhood,
+)
 from .v2_artifacts import (
     AgentSessionTrace,
     CandidateSubgraphState,
@@ -55,12 +61,30 @@ class GraphEditingVLMSubgraphSampler:
         batch: tuple[list[tuple[str, dict]], list[tuple[Any, Any, dict]]],
         *,
         seed_node_id: str,
+        debug: bool = False,
     ) -> dict[str, Any]:
         nodes, _edges = batch
         seed_node = self.graph.get_node(seed_node_id) or {}
         image_path = self._extract_image_path(seed_node)
+        debug_trace = DebugTrace(sampler_version="v2", seed_node_id=seed_node_id) if debug else None
+        if debug_trace is not None:
+            debug_trace.add_step(
+                phase="setup",
+                step_type="seed_validation",
+                status="success" if seed_node_id and seed_node and image_path else "failed",
+                summary=(
+                    "Validated seed node and image asset."
+                    if seed_node_id and seed_node and image_path
+                    else "Seed node or image asset missing."
+                ),
+                snapshot={
+                    "seed_node_id": seed_node_id,
+                    "has_seed_node": bool(seed_node),
+                    "image_path": image_path,
+                },
+            )
         if not seed_node_id or not seed_node or not image_path:
-            return self._build_empty_result(
+            result = self._build_empty_result(
                 seed_node_id=seed_node_id,
                 image_path=image_path,
                 degraded=False,
@@ -78,6 +102,12 @@ class GraphEditingVLMSubgraphSampler:
                     termination_reason="missing_image_seed_or_asset",
                 ).to_dict(),
             )
+            return self._attach_debug_trace(
+                result,
+                debug_trace=debug_trace,
+                final_status="abstained",
+                termination_reason="missing_image_seed_or_asset",
+            )
 
         primary = await self._run_session(
             nodes=nodes,
@@ -85,20 +115,41 @@ class GraphEditingVLMSubgraphSampler:
             seed_node=seed_node,
             image_path=image_path,
             degraded=False,
+            debug_trace=debug_trace,
         )
         if primary["selected_subgraphs"]:
-            return primary
+            return self._attach_debug_trace(
+                primary,
+                debug_trace=debug_trace,
+                final_status="selected",
+                termination_reason=primary["termination_reason"],
+            )
 
         if self.allow_degraded:
+            if debug_trace is not None:
+                debug_trace.add_step(
+                    phase="fallback",
+                    step_type="degraded_retry",
+                    status="running",
+                    degraded=True,
+                    summary="Retrying graph editing sampler in degraded mode.",
+                    snapshot={"trigger": primary["termination_reason"]},
+                )
             degraded = await self._run_session(
                 nodes=nodes,
                 seed_node_id=seed_node_id,
                 seed_node=seed_node,
                 image_path=image_path,
                 degraded=True,
+                debug_trace=debug_trace,
             )
             if degraded["selected_subgraphs"]:
-                return degraded
+                return self._attach_debug_trace(
+                    degraded,
+                    debug_trace=debug_trace,
+                    final_status="selected",
+                    termination_reason=degraded["termination_reason"],
+                )
             primary["candidate_bundle"].extend(degraded.get("candidate_bundle", []))
             primary["edit_trace"].extend(degraded.get("edit_trace", []))
             primary["judge_trace"].extend(degraded.get("judge_trace", []))
@@ -109,7 +160,12 @@ class GraphEditingVLMSubgraphSampler:
             )
             primary["degraded_reason"] = degraded.get("degraded_reason", "")
             primary["agent_session"] = degraded.get("agent_session", primary["agent_session"])
-        return primary
+        return self._attach_debug_trace(
+            primary,
+            debug_trace=debug_trace,
+            final_status="abstained",
+            termination_reason=primary["termination_reason"],
+        )
 
     async def _run_session(
         self,
@@ -119,14 +175,33 @@ class GraphEditingVLMSubgraphSampler:
         seed_node: dict,
         image_path: str,
         degraded: bool,
+        debug_trace: DebugTrace | None = None,
     ) -> dict[str, Any]:
         seed_scope = self._collect_seed_scope(seed_node_id, nodes)
+        if debug_trace is not None:
+            debug_trace.add_step(
+                phase="setup",
+                step_type="seed_scope",
+                status="success",
+                degraded=degraded,
+                summary="Collected provenance scope from the image seed.",
+                snapshot={"seed_scope": sorted(seed_scope)},
+            )
         neighborhood = self._collect_neighborhood(
             seed_node_id=seed_node_id,
             max_hops=1,
             seed_scope=seed_scope,
         )
         neighborhood_trace = [self._neighborhood_snapshot(neighborhood, hop=1)]
+        if debug_trace is not None:
+            debug_trace.add_step(
+                phase="setup",
+                step_type="neighborhood_collection",
+                status="success",
+                degraded=degraded,
+                summary="Collected initial one-hop neighborhood.",
+                snapshot=snapshot_neighborhood(neighborhood, hop=1),
+            )
         state = CandidateSubgraphState(
             candidate_id="candidate-1",
             seed_node_id=seed_node_id,
@@ -134,6 +209,15 @@ class GraphEditingVLMSubgraphSampler:
             degraded=degraded,
         )
         candidate_states = [state.to_dict()]
+        if debug_trace is not None:
+            debug_trace.add_step(
+                phase="editing",
+                step_type="candidate_state",
+                status="success",
+                degraded=degraded,
+                summary="Initialized editable candidate state.",
+                snapshot=self._state_snapshot(state),
+            )
         edit_trace: list[dict[str, Any]] = []
         judge_trace: list[dict[str, Any]] = []
         candidate_bundle: list[dict[str, Any]] = []
@@ -195,6 +279,19 @@ class GraphEditingVLMSubgraphSampler:
                 }
             )
             candidate_states.append(state.to_dict())
+            if debug_trace is not None:
+                debug_trace.add_step(
+                    phase="editing",
+                    step_type="edit_round",
+                    status="success",
+                    degraded=degraded,
+                    summary=f"Applied edit round {round_index}.",
+                    snapshot={
+                        **self._state_snapshot(state),
+                        "round_index": round_index,
+                        "actions": list(round_actions),
+                    },
+                )
 
             if not commit_requested and state.unit_count() >= self.hard_cap_units:
                 commit_requested = True
@@ -216,6 +313,28 @@ class GraphEditingVLMSubgraphSampler:
                     **judge_feedback.to_dict(),
                 }
             )
+            if debug_trace is not None:
+                debug_trace.add_step(
+                    phase="judge",
+                    step_type="candidate_judgement",
+                    status="success" if judge_feedback.sufficient else "failed",
+                    degraded=degraded,
+                    summary=(
+                        f"Judge {'accepted' if judge_feedback.sufficient else 'rejected'} "
+                        f"{state.candidate_id} in round {round_index}."
+                    ),
+                    snapshot={
+                        **self._state_snapshot(state),
+                        "round_index": round_index,
+                        **snapshot_judge(
+                            scorecard=judge_feedback.scorecard,
+                            rejection_reason=judge_feedback.rejection_reason,
+                            sufficient=judge_feedback.sufficient,
+                            needs_expansion=judge_feedback.needs_expansion,
+                            suggested_actions=judge_feedback.suggested_actions,
+                        ),
+                    },
+                )
             candidate_bundle.append(
                 {
                     "candidate_id": state.candidate_id,
@@ -232,7 +351,7 @@ class GraphEditingVLMSubgraphSampler:
             if judge_feedback.sufficient:
                 state.status = "accepted"
                 selected = self._materialize_selected_subgraph(state, judge_feedback)
-                return self._build_result(
+                result = self._build_result(
                     seed_node_id=seed_node_id,
                     image_path=image_path,
                     degraded=degraded,
@@ -255,6 +374,19 @@ class GraphEditingVLMSubgraphSampler:
                         termination_reason="judge_marked_sufficient",
                     ).to_dict(),
                 )
+                if debug_trace is not None:
+                    debug_trace.add_step(
+                        phase="finalize",
+                        step_type="selection",
+                        status="success",
+                        degraded=degraded,
+                        summary=f"Selected {state.candidate_id}.",
+                        snapshot={
+                            "selected_candidate_ids": [state.candidate_id],
+                            "round_index": round_index,
+                        },
+                    )
+                return result
 
             if (
                 judge_feedback.needs_expansion
@@ -268,10 +400,19 @@ class GraphEditingVLMSubgraphSampler:
                 )
                 neighborhood_trace.append(self._neighborhood_snapshot(neighborhood, hop=2))
                 expanded_to_two_hop = True
+                if debug_trace is not None:
+                    debug_trace.add_step(
+                        phase="editing",
+                        step_type="neighborhood_expansion",
+                        status="success",
+                        degraded=degraded,
+                        summary="Expanded neighborhood from one hop to two hops.",
+                        snapshot=snapshot_neighborhood(neighborhood, hop=2),
+                    )
                 continue
 
         termination_reason = "degraded_exhausted" if degraded else "no_candidate_passed_judge"
-        return self._build_empty_result(
+        result = self._build_empty_result(
             seed_node_id=seed_node_id,
             image_path=image_path,
             degraded=degraded,
@@ -293,6 +434,19 @@ class GraphEditingVLMSubgraphSampler:
                 termination_reason=termination_reason,
             ).to_dict(),
         )
+        if debug_trace is not None:
+            debug_trace.add_step(
+                phase="finalize",
+                step_type="selection",
+                status="failed",
+                degraded=degraded,
+                summary="No candidate state was accepted.",
+                snapshot={
+                    "selected_candidate_ids": [],
+                    "candidate_bundle_size": len(candidate_bundle),
+                },
+            )
+        return result
 
     async def _edit_round(
         self,
@@ -642,6 +796,18 @@ class GraphEditingVLMSubgraphSampler:
             "node_ids": list(neighborhood.get("node_ids", [])),
         }
 
+    def _state_snapshot(self, state: CandidateSubgraphState) -> dict[str, Any]:
+        return snapshot_candidate_like(
+            candidate_id=state.candidate_id,
+            intent=state.intent,
+            technical_focus=state.technical_focus,
+            approved_question_types=state.approved_question_types,
+            node_ids=state.node_ids,
+            edge_pairs=state.edge_pairs,
+            unit_count=state.unit_count(),
+            extra={"status": state.status},
+        )
+
     def _rejected_feedback(self, reason: str) -> JudgeFeedback:
         return JudgeFeedback(
             scorecard=JudgeScorecard(
@@ -653,6 +819,23 @@ class GraphEditingVLMSubgraphSampler:
             rejection_reason=reason,
             suggested_actions=[],
         )
+
+    @staticmethod
+    def _attach_debug_trace(
+        result: dict[str, Any],
+        *,
+        debug_trace: DebugTrace | None,
+        final_status: str,
+        termination_reason: str,
+    ) -> dict[str, Any]:
+        if debug_trace is None:
+            return result
+        debug_trace.finalize(
+            final_status=final_status,
+            termination_reason=termination_reason,
+        )
+        result["debug_trace"] = debug_trace.to_dict()
+        return result
 
     def _build_result(
         self,
