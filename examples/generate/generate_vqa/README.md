@@ -38,6 +38,22 @@ This variant inserts:
 partition -> sample_subgraph_v2 -> generate(method=auto)
 ```
 
+If you want the family-aware `v3` workflow, use `agentic_subgraph_reasoning_v3_config.yaml`.
+This variant inserts:
+
+```text
+build_grounded_tree_kg -> sample_subgraph_v3 -> generate(method=auto)
+```
+
+`sample_subgraph_v3` will independently try to produce:
+
+- one `atomic` subgraph
+- one `aggregated` subgraph
+- one `multi_hop` subgraph
+
+and then let `generate(method=auto)` route them by `qa_family` instead of guessing from free-form question types.
+For the full design notes, see `docs/vlm_vqa/agentic_subgraph_v3.md`.
+
 ### 3) Quality controls already enabled
 - Prompt-level constraints for DRAM/VQA reasoning (structure, timing, performance, comparison, grounding).
 - Post-generation filtering in `VQAGenerator`:
@@ -56,3 +72,5 @@ For `agentic_subgraph_reasoning_config.yaml`, the main knobs are `sample_subgrap
 `candidate_pool_size`, and `max_hops_from_seed`.
 For `agentic_subgraph_reasoning_v2_config.yaml`, the main knobs are
 `sample_subgraph_v2.params.hard_cap_units`, `max_rounds`, and `judge_pass_threshold`.
+For `agentic_subgraph_reasoning_v3_config.yaml`, the main knobs are
+`sample_subgraph_v3.params.hard_cap_units`, `max_rounds`, `judge_pass_threshold`, and `max_multi_hop_hops`.

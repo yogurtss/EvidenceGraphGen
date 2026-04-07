@@ -14,6 +14,10 @@ build_grounded_tree_kg -> sample_subgraph_v3 -> generate(method=auto)
 
 - `docs/vlm_vqa/schema_guided_subgraph.md`
 
+如果你想专门看 `v3` 的 family-aware 设计，请单独阅读：
+
+- `docs/vlm_vqa/agentic_subgraph_v3.md`
+
 它们都面向技术文档图像，只是内部策略不同：
 
 - `sample_subgraph`
@@ -49,7 +53,7 @@ build_grounded_tree_kg -> sample_subgraph_v3 -> generate(method=auto)
 - `examples/generate/generate_vqa/agentic_subgraph_reasoning_v2_config.yaml`
 - `examples/generate/generate_vqa/agentic_subgraph_reasoning_v3_config.yaml`
 
-完整链路可以走两种变体：
+完整链路现在主要有三种变体：
 
 ```text
 read
@@ -100,9 +104,14 @@ read
   - 输出 family-aware `selected_subgraphs`
 - `generate(method=auto)`
   - 消费 `selected_subgraphs`
-  - 根据 question type 自动选择合适 generator
+  - `v1/v2` 根据 question type 做兼容路由
+  - `v3` 优先根据 `qa_family` 做严格路由
 
 换句话说，真正决定“最终拿哪个子图来出题”的阶段是 `sample_subgraph` / `sample_subgraph_v2`。
+
+如果只关心 `v3`，推荐直接跳到：
+
+- `docs/vlm_vqa/agentic_subgraph_v3.md`
 
 ## 2. 实现结构
 
