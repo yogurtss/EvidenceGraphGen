@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from graphgen.bases.datatypes import Chunk
 from graphgen.models.generator.aggregated_vqa_generator import AggregatedVQAGenerator
+from graphgen.models.generator.atomic_vqa_generator import AtomicVQAGenerator
 from graphgen.models.generator.vqa_generator import VQAGenerator
 from graphgen.models.kg_builder.mm_kg_builder import MMKGBuilder
 from graphgen.models.kg_builder.light_rag_kg_builder import LightRAGKGBuilder
@@ -343,6 +344,7 @@ def test_build_kg_service_uses_split_evidence_settings_for_text_and_mm(tmp_path)
     ):
         service = BuildKGService(
             working_dir=str(tmp_path / "cache"),
+            kv_backend="json_kv",
             require_entity_evidence=True,
             require_relation_evidence=True,
             validate_evidence_in_source=True,
@@ -430,4 +432,49 @@ def test_aggregated_vqa_generator_formats_chatml_with_image():
 
     assert result["messages"][0]["content"] == [
         {"text": "图中展示了什么结构?", "image": "demo.png"}
+    ]
+
+
+def test_atomic_vqa_generator_attaches_image_path():
+    llm = _DummyLLM(["<question>图中读取到哪个参数?</question><answer>tRCD</answer>"])
+    generator = AtomicVQAGenerator(llm)
+
+    result = asyncio.run(
+        generator.generate(
+            (
+                [
+                    (
+                        "FIG-1",
+                        {
+                            "description": "Timing diagram with tRCD annotation",
+                            "metadata": '{"img_path":"demo.png"}',
+                        },
+                    )
+                ],
+                [],
+            )
+        )
+    )
+
+    assert result == [
+        {
+            "question": "图中读取到哪个参数?",
+            "answer": "tRCD",
+            "img_path": "demo.png",
+        }
+    ]
+
+
+def test_atomic_vqa_generator_formats_chatml_with_image():
+    result = AtomicVQAGenerator.format_generation_results(
+        {
+            "question": "图中读取到哪个参数?",
+            "answer": "tRCD",
+            "img_path": "demo.png",
+        },
+        output_data_format="ChatML",
+    )
+
+    assert result["messages"][0]["content"] == [
+        {"text": "图中读取到哪个参数?", "image": "demo.png"}
     ]

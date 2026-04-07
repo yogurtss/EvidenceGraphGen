@@ -50,6 +50,10 @@ class GenerateService(BaseOperator):
             from graphgen.models import MultiHopVQAGenerator
 
             self.generator = MultiHopVQAGenerator(self.llm_client)
+        elif self.method == "atomic_vqa":
+            from graphgen.models import AtomicVQAGenerator
+
+            self.generator = AtomicVQAGenerator(self.llm_client)
         elif self.method == "cot":
             from graphgen.models import CoTGenerator
 
@@ -64,6 +68,7 @@ class GenerateService(BaseOperator):
             self.generator = AggregatedVQAGenerator(self.llm_client)
         elif self.method == "auto":
             from graphgen.models import (
+                AtomicVQAGenerator,
                 AggregatedVQAGenerator,
                 MultiHopVQAGenerator,
                 VQAGenerator,
@@ -71,6 +76,7 @@ class GenerateService(BaseOperator):
 
             self.generator = None
             self.generator_map = {
+                "atomic": AtomicVQAGenerator(self.llm_client),
                 "aggregated": AggregatedVQAGenerator(self.llm_client),
                 "multi_hop": MultiHopVQAGenerator(self.llm_client),
                 "vqa": VQAGenerator(self.llm_client),
@@ -141,12 +147,9 @@ class GenerateService(BaseOperator):
                 item = task["item"]
                 input_trace_id = item["_trace_id"]
                 subgraph_item = task["subgraph_item"]
-                sub_graph = {
-                    "nodes": copy.deepcopy(subgraph_item.get("nodes", [])),
-                    "edges": copy.deepcopy(subgraph_item.get("edges", [])),
-                }
+                sub_graph = self._serialize_sub_graph_payload(subgraph_item)
                 sub_graph_summary = self._build_sub_graph_summary(
-                    subgraph_item.get("nodes", []), subgraph_item.get("edges", [])
+                    sub_graph.get("nodes", []), sub_graph.get("edges", [])
                 )
                 for generated in generated_pairs:
                     generator_key = generated["generator_key"]
@@ -175,12 +178,9 @@ class GenerateService(BaseOperator):
                 if not qa_pairs:
                     continue
                 input_trace_id = item["_trace_id"]
-                sub_graph = {
-                    "nodes": copy.deepcopy(item.get("nodes", [])),
-                    "edges": copy.deepcopy(item.get("edges", [])),
-                }
+                sub_graph = self._serialize_sub_graph_payload(item)
                 sub_graph_summary = self._build_sub_graph_summary(
-                    item.get("nodes", []), item.get("edges", [])
+                    sub_graph.get("nodes", []), sub_graph.get("edges", [])
                 )
                 for qa_pair in qa_pairs:
                     res = self.generator.format_generation_results(
@@ -277,19 +277,25 @@ class GenerateService(BaseOperator):
             for selected in selected_subgraphs:
                 if not isinstance(selected, dict):
                     continue
-                nodes = selected.get("nodes")
-                edges = selected.get("edges")
+                normalized_subgraph = self._serialize_sub_graph_payload(selected)
+                nodes = normalized_subgraph.get("nodes")
+                edges = normalized_subgraph.get("edges")
                 if nodes is None or edges is None or not nodes:
                     continue
                 generator_keys = self._resolve_generator_keys(
                     selected.get("approved_question_types", []),
+                    qa_family=selected.get("qa_family"),
                     degraded=bool(selected.get("degraded")),
                     max_qas=max_qas,
                 )
                 tasks.append(
                     {
                         "item": item,
-                        "subgraph_item": selected,
+                        "subgraph_item": {
+                            **selected,
+                            "nodes": nodes,
+                            "edges": edges,
+                        },
                         "generator_keys": generator_keys,
                         "triple": (nodes, edges),
                         "max_qas": max_qas,
@@ -367,6 +373,8 @@ class GenerateService(BaseOperator):
             res["approved_question_types"] = json.dumps(
                 subgraph_item["approved_question_types"], ensure_ascii=False
             )
+        if subgraph_item.get("qa_family"):
+            res["qa_family"] = str(subgraph_item["qa_family"])
 
         if generator_key:
             res["generator_key"] = generator_key
@@ -376,9 +384,14 @@ class GenerateService(BaseOperator):
         self,
         approved_question_types: list,
         *,
+        qa_family: str | None = None,
         degraded: bool,
         max_qas: int,
     ) -> list[str]:
+        normalized_family = str(qa_family or "").strip().lower()
+        if normalized_family in {"atomic", "aggregated", "multi_hop"}:
+            return [normalized_family]
+
         question_types = [
             str(item).strip().lower()
             for item in approved_question_types
@@ -399,6 +412,20 @@ class GenerateService(BaseOperator):
         if not generator_keys:
             generator_keys = ["aggregated"]
         return generator_keys[:max_qas]
+
+    @staticmethod
+    def _normalize_sub_graph_value(value):
+        try:
+            return json.loads(json.dumps(value, ensure_ascii=False))
+        except (TypeError, ValueError):
+            return copy.deepcopy(value)
+
+    @classmethod
+    def _serialize_sub_graph_payload(cls, item: dict) -> dict:
+        return {
+            "nodes": cls._normalize_sub_graph_value(item.get("nodes", [])),
+            "edges": cls._normalize_sub_graph_value(item.get("edges", [])),
+        }
 
     @staticmethod
     def _normalize_signature(text: str) -> str:

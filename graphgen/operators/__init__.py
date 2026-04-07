@@ -12,6 +12,7 @@ from .rephrase import RephraseService
 from .sample_subgraph import SampleSubgraphService
 from .schema_guided_subgraph import SchemaGuidedSubgraphService
 from .sample_subgraph_v2 import SampleSubgraphV2Service
+from .sample_subgraph_v3 import SampleSubgraphV3Service
 from .search import SearchService
 from .tree_pipeline import (
     BuildGroundedTreeKGService,
@@ -40,6 +41,7 @@ operators = {
     "sample_subgraph": SampleSubgraphService,
     "schema_guided_subgraph": SchemaGuidedSubgraphService,
     "sample_subgraph_v2": SampleSubgraphV2Service,
+    "sample_subgraph_v3": SampleSubgraphV3Service,
     "structure_analyze": StructureAnalyzeService,
     "hierarchy_generate": HierarchyGenerateService,
     "tree_construct": TreeConstructService,

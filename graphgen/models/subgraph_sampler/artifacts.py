@@ -74,6 +74,32 @@ def clip_score(value: Any, *, default: float = 0.0) -> float:
         return float(default)
 
 
+def stabilize_allowed_values(
+    values: list[Any] | tuple[Any, ...] | set[Any],
+    allowed_values: list[str] | tuple[str, ...],
+    *,
+    fallback: list[str] | None = None,
+) -> list[str]:
+    allowed = [str(item).strip() for item in allowed_values if str(item).strip()]
+    allowed_set = set(allowed)
+    incoming = {
+        str(item).strip()
+        for item in (values or [])
+        if str(item).strip() in allowed_set
+    }
+    stabilized = [item for item in allowed if item in incoming]
+    if stabilized:
+        return stabilized
+    return list(fallback or [])
+
+
+def to_json_compatible(value: Any) -> Any:
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False))
+    except (TypeError, ValueError):
+        return value
+
+
 @dataclass
 class JudgeScorecard:
     image_indispensability: float = 0.0
@@ -133,16 +159,20 @@ class SelectedSubgraphArtifact:
     judge_scores: JudgeScorecard
     approved_question_types: list[str]
     degraded: bool = False
+    qa_family: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "subgraph_id": self.subgraph_id,
             "technical_focus": self.technical_focus,
-            "nodes": self.nodes,
-            "edges": self.edges,
+            "nodes": to_json_compatible(self.nodes),
+            "edges": to_json_compatible(self.edges),
             "image_grounding_summary": self.image_grounding_summary,
             "evidence_summary": self.evidence_summary,
             "judge_scores": self.judge_scores.to_dict(),
             "approved_question_types": self.approved_question_types,
             "degraded": self.degraded,
         }
+        if self.qa_family:
+            payload["qa_family"] = self.qa_family
+        return payload

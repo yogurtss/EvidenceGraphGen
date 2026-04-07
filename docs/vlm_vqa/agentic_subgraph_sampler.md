@@ -2,11 +2,12 @@
 
 ## 导读
 
-本文只说明当前两条 agentic subgraph sampling 链路：
+本文说明当前三条 agentic subgraph sampling 链路：
 
 ```text
 build_grounded_tree_kg -> sample_subgraph -> generate(method=auto)
 build_grounded_tree_kg -> sample_subgraph_v2 -> generate(method=auto)
+build_grounded_tree_kg -> sample_subgraph_v3 -> generate(method=auto)
 ```
 
 如果你想看 `schema_guided_subgraph`，请单独阅读：
@@ -21,6 +22,9 @@ build_grounded_tree_kg -> sample_subgraph_v2 -> generate(method=auto)
 - `sample_subgraph_v2`
   - 新的 graph-editing agent
   - 采用 `Coordinator + Editor + Judge` 的状态式编辑回路
+- `sample_subgraph_v3`
+  - family-aware graph-editing agent
+  - 为 `atomic / aggregated / multi_hop` 三类分别选图，再交给 `generate(method=auto)` 严格路由
 
 设计目标是：
 
@@ -43,6 +47,7 @@ build_grounded_tree_kg -> sample_subgraph_v2 -> generate(method=auto)
 
 - `examples/generate/generate_vqa/agentic_subgraph_reasoning_config.yaml`
 - `examples/generate/generate_vqa/agentic_subgraph_reasoning_v2_config.yaml`
+- `examples/generate/generate_vqa/agentic_subgraph_reasoning_v3_config.yaml`
 
 完整链路可以走两种变体：
 
@@ -68,6 +73,18 @@ read
 -> generate(method=auto)
 ```
 
+```text
+read
+-> structure_analyze
+-> hierarchy_generate
+-> tree_construct
+-> tree_chunk
+-> build_grounded_tree_kg
+-> partition(anchor_bfs, image/table)
+-> sample_subgraph_v3
+-> generate(method=auto)
+```
+
 各阶段职责分成两层：
 
 - `build_grounded_tree_kg`
@@ -78,6 +95,9 @@ read
 - `sample_subgraph_v2`
   - `v2` 围绕 image seed 做 graph-editing agent search
   - 产出显式 artifact，而不是直接出题
+- `sample_subgraph_v3`
+  - `v3` 围绕 image seed 为三类 QA family 分别做 graph-editing search
+  - 输出 family-aware `selected_subgraphs`
 - `generate(method=auto)`
   - 消费 `selected_subgraphs`
   - 根据 question type 自动选择合适 generator
@@ -100,6 +120,14 @@ read
 - `graphgen/models/subgraph_sampler/v2_artifacts.py`
 - `graphgen/models/subgraph_sampler/v2_prompts.py`
 - `graphgen/operators/sample_subgraph_v2/sample_subgraph_v2_service.py`
+- `graphgen/operators/generate/generate_service.py`
+
+`v3` 对应代码：
+
+- `graphgen/models/subgraph_sampler/family_aware_vlm_sampler.py`
+- `graphgen/models/subgraph_sampler/v3_prompts.py`
+- `graphgen/operators/sample_subgraph_v3/sample_subgraph_v3_service.py`
+- `graphgen/models/generator/atomic_vqa_generator.py`
 - `graphgen/operators/generate/generate_service.py`
 
 其中职责拆分如下：
@@ -162,6 +190,15 @@ read
 - `judge_trace`
 - `neighborhood_trace`
 - `termination_reason`
+
+`v3` 在 `v2` trace 基础上还会新增：
+
+- `selected_subgraphs[*].qa_family`
+- `agent_session[*].qa_family`
+- `candidate_states[*].qa_family`
+- `edit_trace[*].qa_family`
+- `judge_trace[*].qa_family`
+- `neighborhood_trace[*].qa_family`
 
 ### 2.4 生成阶段如何衔接
 

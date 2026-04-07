@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from graphgen.models.subgraph_sampler.agentic_vlm_sampler import VLMSubgraphSampler
+from graphgen.models.subgraph_sampler.constants import ALLOWED_PRIMARY_QUESTION_TYPES
 from graphgen.operators.generate.generate_service import GenerateService
 from graphgen.operators.sample_subgraph import SampleSubgraphService
 from graphgen.storage import NetworkXStorage
@@ -399,7 +400,6 @@ def test_agentic_sampler_builds_single_selected_subgraph(tmp_path: Path):
     assert selected["judge_scores"]["passes"] is True
     assert any(node_id == "random_access_perf" for node_id, _ in selected["nodes"])
 
-
 def test_agentic_sampler_emits_debug_trace_when_enabled(tmp_path: Path):
     storage = NetworkXStorage(
         working_dir=str(tmp_path / "cache"),
@@ -430,6 +430,50 @@ def test_agentic_sampler_emits_debug_trace_when_enabled(tmp_path: Path):
     assert "planner_intents" in step_types
     assert "candidate_judgement" in step_types
     assert step_types[-1] == "selection"
+
+
+def test_agentic_sampler_stabilizes_question_type_order(tmp_path: Path):
+    class _ShuffledLLM(_DummyLLM):
+        @staticmethod
+        def _assembler_response(prompt: str) -> str:
+            return json.dumps(
+                {
+                    "technical_focus": "timing",
+                    "node_ids": [
+                        "image_seed",
+                        "latency_metric",
+                        "row_activation",
+                    ],
+                    "edge_pairs": [
+                        ["image_seed", "latency_metric"],
+                        ["latency_metric", "row_activation"],
+                    ],
+                    "approved_question_types": [
+                        "light_multi_hop_technical_reasoning",
+                        "parameter_relation_understanding",
+                        "parameter_relation_understanding",
+                    ],
+                    "image_grounding_summary": "The image anchors the timing metric.",
+                    "evidence_summary": "The subgraph connects the figure to a short timing chain.",
+                }
+            )
+
+    storage = NetworkXStorage(
+        working_dir=str(tmp_path / "cache"),
+        namespace="graph_sampler_stable_order",
+    )
+    _build_graph(storage)
+    sampler = VLMSubgraphSampler(storage, _ShuffledLLM(planner_mode="single"))
+
+    result = __import__("asyncio").run(
+        sampler.sample((storage.get_all_nodes(), storage.get_all_edges()), seed_node_id="image_seed")
+    )
+
+    assert result["selected_subgraphs"][0]["approved_question_types"] == [
+        item
+        for item in ALLOWED_PRIMARY_QUESTION_TYPES
+        if item in {"parameter_relation_understanding", "light_multi_hop_technical_reasoning"}
+    ]
 
 
 def test_sample_subgraph_service_can_keep_multiple_themes(tmp_path: Path):
@@ -645,6 +689,8 @@ def test_generate_service_consumes_selected_subgraphs_and_preserves_metadata(tmp
     assert all(row["seed_node_id"] == "image_seed" for row in rows)
     assert all(row["subgraph_id"] == "candidate-1" for row in rows)
     assert all("candidate_bundle" in row for row in rows)
+    assert all(isinstance(json.loads(row["sub_graph"]), dict) for row in rows)
+    assert all(json.loads(row["sub_graph_summary"])["node_count"] == 2 for row in rows)
 
 
 def test_generate_service_respects_per_subgraph_budget_with_single_generator(tmp_path: Path):
@@ -706,6 +752,110 @@ def test_generate_service_respects_per_subgraph_budget_with_single_generator(tmp
 
     assert len(rows) == 2
     assert {row["generator_key"] for row in rows} == {"aggregated"}
+
+
+def test_generate_service_v3_family_route_is_strict(tmp_path: Path):
+    with patch(
+        "graphgen.operators.generate.generate_service.init_storage",
+        return_value=_DummyKV(),
+    ), patch(
+        "graphgen.operators.generate.generate_service.init_llm",
+        return_value=_DummyLLM(),
+    ):
+        service = GenerateService(
+            working_dir=str(tmp_path / "cache"),
+            kv_backend="json_kv",
+            method="auto",
+            data_format="ChatML",
+        )
+
+    service.generator_map = {
+        "atomic": _DummyGenerator("atomic"),
+        "aggregated": _DummyGenerator("aggregated"),
+        "multi_hop": _DummyGenerator("multi_hop"),
+        "vqa": _DummyGenerator("vqa"),
+    }
+
+    rows, _ = service.process(
+        [
+            {
+                "_trace_id": "sample-v3-route",
+                "seed_node_id": "image_seed",
+                "seed_image_path": "figures/fig1.png",
+                "selection_mode": "multi",
+                "degraded": False,
+                "max_vqas_per_selected_subgraph": 1,
+                "selected_subgraphs": [
+                    {
+                        "subgraph_id": "atomic-candidate-1",
+                        "qa_family": "atomic",
+                        "technical_focus": "timing",
+                        "nodes": [
+                            ("image_seed", {"entity_type": "IMAGE", "metadata": '{"image_path":"figures/fig1.png"}'}),
+                            ("latency_metric", {"entity_type": "METRIC", "description": "tRCD latency"}),
+                        ],
+                        "edges": [
+                            (
+                                "image_seed",
+                                "latency_metric",
+                                {"relation_type": "shows_metric", "description": "figure shows tRCD"},
+                            )
+                        ],
+                        "approved_question_types": ["atomic"],
+                    },
+                    {
+                        "subgraph_id": "aggregated-candidate-1",
+                        "qa_family": "aggregated",
+                        "technical_focus": "timing",
+                        "nodes": [
+                            ("image_seed", {"entity_type": "IMAGE", "metadata": '{"image_path":"figures/fig1.png"}'}),
+                            ("latency_metric", {"entity_type": "METRIC", "description": "tRCD latency"}),
+                            ("row_activation", {"entity_type": "CONCEPT", "description": "row activation"}),
+                        ],
+                        "edges": [
+                            (
+                                "image_seed",
+                                "latency_metric",
+                                {"relation_type": "shows_metric", "description": "figure shows tRCD"},
+                            ),
+                            (
+                                "latency_metric",
+                                "row_activation",
+                                {"relation_type": "constrains", "description": "tRCD constrains row activation"},
+                            ),
+                        ],
+                        "approved_question_types": ["aggregated"],
+                    },
+                    {
+                        "subgraph_id": "multi-hop-candidate-1",
+                        "qa_family": "multi_hop",
+                        "technical_focus": "timing",
+                        "nodes": [
+                            ("image_seed", {"entity_type": "IMAGE", "metadata": '{"image_path":"figures/fig1.png"}'}),
+                            ("latency_metric", {"entity_type": "METRIC", "description": "tRCD latency"}),
+                            ("row_activation", {"entity_type": "CONCEPT", "description": "row activation"}),
+                        ],
+                        "edges": [
+                            (
+                                "image_seed",
+                                "latency_metric",
+                                {"relation_type": "shows_metric", "description": "figure shows tRCD"},
+                            ),
+                            (
+                                "latency_metric",
+                                "row_activation",
+                                {"relation_type": "constrains", "description": "tRCD constrains row activation"},
+                            ),
+                        ],
+                        "approved_question_types": ["multi_hop"],
+                    },
+                ],
+            }
+        ]
+    )
+
+    assert {row["generator_key"] for row in rows} == {"atomic", "aggregated", "multi_hop"}
+    assert {row["qa_family"] for row in rows} == {"atomic", "aggregated", "multi_hop"}
 
 
 def test_sample_subgraph_service_requires_synthesizer_vlm(tmp_path: Path):

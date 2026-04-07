@@ -14,6 +14,7 @@ if TYPE_CHECKING:
         AggregatedGenerator,
         AggregatedVQAGenerator,
         AtomicGenerator,
+        AtomicVQAGenerator,
         CoTGenerator,
         FillInBlankGenerator,
         MultiAnswerGenerator,
@@ -54,6 +55,7 @@ if TYPE_CHECKING:
     from .searcher.web.google_search import GoogleSearch
     from .splitter import ChineseRecursiveTextSplitter, RecursiveCharacterSplitter
     from .subgraph_sampler import (
+        FamilyAwareVLMSubgraphSampler,
         GraphEditingVLMSubgraphSampler,
         SchemaGuidedVLMSubgraphSampler,
         VLMSubgraphSampler,
@@ -74,6 +76,7 @@ _import_map = {
     "AggregatedGenerator": ".generator",
     "AggregatedVQAGenerator": ".generator",
     "AtomicGenerator": ".generator",
+    "AtomicVQAGenerator": ".generator",
     "CoTGenerator": ".generator",
     "FillInBlankGenerator": ".generator",
     "MultiAnswerGenerator": ".generator",
@@ -118,6 +121,7 @@ _import_map = {
     "ChineseRecursiveTextSplitter": ".splitter",
     "RecursiveCharacterSplitter": ".splitter",
     "GraphEditingVLMSubgraphSampler": ".subgraph_sampler",
+    "FamilyAwareVLMSubgraphSampler": ".subgraph_sampler",
     "SchemaGuidedVLMSubgraphSampler": ".subgraph_sampler",
     "VLMSubgraphSampler": ".subgraph_sampler",
     # Tokenizer

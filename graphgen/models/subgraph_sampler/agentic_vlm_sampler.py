@@ -11,6 +11,7 @@ from .artifacts import (
     extract_json_payload,
     load_metadata,
     normalize_edge_pair,
+    stabilize_allowed_values,
     split_source_ids,
 )
 from .constants import (
@@ -428,9 +429,7 @@ class VLMSubgraphSampler:
                     item.get("technical_focus", intent_text), limit=80
                 )
                 selected_question_types = [
-                    q
-                    for q in item.get("question_types", [])
-                    if q in allowed_question_types
+                    q for q in item.get("question_types", []) if q in allowed_question_types
                 ]
                 keywords = [
                     compact_text(keyword, limit=40)
@@ -442,8 +441,11 @@ class VLMSubgraphSampler:
                         {
                             "intent": intent_text,
                             "technical_focus": technical_focus or intent_text,
-                            "question_types": selected_question_types
-                            or allowed_question_types[:1],
+                            "question_types": stabilize_allowed_values(
+                                selected_question_types,
+                                allowed_question_types,
+                                fallback=allowed_question_types[:1],
+                            ),
                             "priority_keywords": keywords,
                         }
                     )
@@ -484,11 +486,13 @@ class VLMSubgraphSampler:
         if len(node_ids) + len(edge_pairs) > self.max_units or len(node_ids) < 2:
             return None
 
-        approved_question_types = [
-            item
-            for item in payload.get("approved_question_types", [])
-            if item in (ALLOWED_DEGRADED_QUESTION_TYPES if degraded else ALLOWED_PRIMARY_QUESTION_TYPES)
-        ]
+        allowed_question_types = (
+            ALLOWED_DEGRADED_QUESTION_TYPES if degraded else ALLOWED_PRIMARY_QUESTION_TYPES
+        )
+        approved_question_types = stabilize_allowed_values(
+            payload.get("approved_question_types", []),
+            allowed_question_types,
+        )
         return SubgraphCandidate(
             candidate_id=f"candidate-{candidate_index}",
             intent=intent.get("intent", "technical interpretation"),
@@ -498,12 +502,14 @@ class VLMSubgraphSampler:
             ),
             node_ids=node_ids,
             edge_pairs=[list(pair) for pair in edge_pairs],
-            approved_question_types=approved_question_types
-            or list(intent.get("question_types", []))
-            or (
-                ALLOWED_DEGRADED_QUESTION_TYPES[:1]
-                if degraded
-                else ALLOWED_PRIMARY_QUESTION_TYPES[:1]
+            approved_question_types=approved_question_types or stabilize_allowed_values(
+                intent.get("question_types", []),
+                allowed_question_types,
+                fallback=(
+                    ALLOWED_DEGRADED_QUESTION_TYPES[:1]
+                    if degraded
+                    else ALLOWED_PRIMARY_QUESTION_TYPES[:1]
+                ),
             ),
             image_grounding_summary=compact_text(
                 payload.get("image_grounding_summary", ""),
@@ -676,7 +682,10 @@ class VLMSubgraphSampler:
             ),
             node_ids=[],
             edge_pairs=[],
-            approved_question_types=list(intent.get("question_types", [])),
+            approved_question_types=stabilize_allowed_values(
+                intent.get("question_types", []),
+                ALLOWED_DEGRADED_QUESTION_TYPES if degraded else ALLOWED_PRIMARY_QUESTION_TYPES,
+            ),
             degraded=degraded,
         )
         candidate.judge_scores = self._rejected_scorecard()

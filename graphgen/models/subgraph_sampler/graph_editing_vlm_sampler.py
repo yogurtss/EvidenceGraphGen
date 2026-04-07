@@ -11,6 +11,7 @@ from .artifacts import (
     extract_json_payload,
     load_metadata,
     normalize_edge_pair,
+    stabilize_allowed_values,
     split_source_ids,
 )
 from .constants import ALLOWED_DEGRADED_QUESTION_TYPES, ALLOWED_PRIMARY_QUESTION_TYPES
@@ -571,11 +572,10 @@ class GraphEditingVLMSubgraphSampler:
             state.intent = compact_text(payload["intent"], limit=120)
         if payload.get("technical_focus"):
             state.technical_focus = compact_text(payload["technical_focus"], limit=80)
-        question_types = [
-            str(item).strip()
-            for item in payload.get("approved_question_types", [])
-            if str(item).strip() in allowed_question_types
-        ]
+        question_types = stabilize_allowed_values(
+            payload.get("approved_question_types", []),
+            allowed_question_types,
+        )
         if question_types:
             state.approved_question_types = question_types
         if payload.get("image_grounding_summary"):
@@ -653,7 +653,13 @@ class GraphEditingVLMSubgraphSampler:
             if action.technical_focus:
                 state.technical_focus = action.technical_focus
             if action.approved_question_types:
-                state.approved_question_types = action.approved_question_types
+                state.approved_question_types = stabilize_allowed_values(
+                    action.approved_question_types,
+                    ALLOWED_DEGRADED_QUESTION_TYPES
+                    if state.degraded
+                    else ALLOWED_PRIMARY_QUESTION_TYPES,
+                    fallback=state.approved_question_types,
+                )
             return True, ""
         return False, "unsupported_action"
 
