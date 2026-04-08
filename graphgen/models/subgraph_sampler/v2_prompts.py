@@ -84,8 +84,11 @@ def build_v2_editor_prompt(
         f"Round index: {round_index}\n"
         f"Allowed question types: {json.dumps(allowed_question_types, ensure_ascii=False)}\n"
         f"Hard cap units: {hard_cap_units}\n"
-        "Valid actions: query_nodes, query_edges, add_node, add_edge, remove_node, "
+        "Valid actions: query_nodes, query_edges, add_node, remove_node, "
         "remove_edge, revise_intent, commit_for_judgement.\n"
+        "Action policy: exactly ONE action per round. "
+        "When action_type is add_node, you MUST provide node_id + anchor_node_id and the edge (src_id, tgt_id) "
+        "that connects anchor node and new node in the same action.\n"
         "Current candidate state:\n"
         f"{json.dumps(current_state.to_dict(), ensure_ascii=False)}\n"
         "Last judge feedback:\n"
@@ -100,8 +103,7 @@ def build_v2_editor_prompt(
         '  "image_grounding_summary": "string",\n'
         '  "evidence_summary": "string",\n'
         '  "actions": [\n'
-        '    {"action_type": "add_node", "node_id": "..."},\n'
-        '    {"action_type": "add_edge", "src_id": "...", "tgt_id": "..."},\n'
+        '    {"action_type": "add_node", "node_id": "...", "anchor_node_id": "...", "src_id": "...", "tgt_id": "..."},\n'
         '    {"action_type": "remove_node", "node_id": "..."},\n'
         '    {"action_type": "remove_edge", "src_id": "...", "tgt_id": "..."},\n'
         '    {"action_type": "revise_intent", "intent": "...", "technical_focus": "...", "approved_question_types": ["..."]},\n'

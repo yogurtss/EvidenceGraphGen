@@ -8,6 +8,7 @@ from .artifacts import JudgeScorecard
 class GraphEditAction:
     action_type: str
     node_id: str = ""
+    anchor_node_id: str = ""
     src_id: str = ""
     tgt_id: str = ""
     intent: str = ""

@@ -349,7 +349,12 @@ class GraphEditingVLMSubgraphSampler:
                     else judge_feedback.rejection_reason or "rejected_by_judge",
                 }
             )
-            if judge_feedback.sufficient:
+            directional_ok = (
+                self._is_directionally_consistent(state)
+                if self._requires_directional_consistency(state)
+                else True
+            )
+            if judge_feedback.sufficient and directional_ok:
                 state.status = "accepted"
                 selected = self._materialize_selected_subgraph(state, judge_feedback)
                 result = self._build_result(
@@ -449,6 +454,37 @@ class GraphEditingVLMSubgraphSampler:
             )
         return result
 
+    def _is_directionally_consistent(self, state: CandidateSubgraphState) -> bool:
+        """Require edges to progress outward from seed (distance must increase by 1)."""
+        if len(state.node_ids) <= 1:
+            return True
+        adjacency = {node_id: set() for node_id in state.node_ids}
+        for src_id, tgt_id in state.edge_pairs:
+            if src_id in adjacency and tgt_id in adjacency:
+                adjacency[src_id].add(tgt_id)
+                adjacency[tgt_id].add(src_id)
+        queue = deque([(state.seed_node_id, 0)])
+        distances = {state.seed_node_id: 0}
+        while queue:
+            node_id, distance = queue.popleft()
+            for neighbor_id in adjacency.get(node_id, set()):
+                if neighbor_id in distances:
+                    continue
+                distances[neighbor_id] = distance + 1
+                queue.append((neighbor_id, distance + 1))
+        if any(node_id not in distances for node_id in state.node_ids):
+            return False
+        for src_id, tgt_id in state.edge_pairs:
+            if src_id not in distances or tgt_id not in distances:
+                return False
+            if abs(distances[src_id] - distances[tgt_id]) != 1:
+                return False
+        return True
+
+    @staticmethod
+    def _requires_directional_consistency(state: CandidateSubgraphState) -> bool:
+        return "multi_hop" in set(state.approved_question_types)
+
     async def _edit_round(
         self,
         *,
@@ -544,6 +580,7 @@ class GraphEditingVLMSubgraphSampler:
                 GraphEditAction(
                     action_type=action_type,
                     node_id=str(item.get("node_id", "")).strip(),
+                    anchor_node_id=str(item.get("anchor_node_id", "")).strip(),
                     src_id=str(item.get("src_id", "")).strip(),
                     tgt_id=str(item.get("tgt_id", "")).strip(),
                     intent=compact_text(item.get("intent", ""), limit=120),
@@ -556,7 +593,8 @@ class GraphEditingVLMSubgraphSampler:
                     note=compact_text(item.get("note", ""), limit=160),
                 )
             )
-        return actions
+        # Enforce one action per round for predictable edit trajectories.
+        return actions[:1]
 
     def _apply_editor_state_updates(
         self,
@@ -602,13 +640,30 @@ class GraphEditingVLMSubgraphSampler:
             return True, ""
         if action_type == "add_node":
             node_id = action.node_id
+            anchor_node_id = action.anchor_node_id
             if node_id not in available_nodes:
                 return False, "node_not_in_neighborhood"
             if node_id in state.node_ids:
                 return False, "node_already_present"
-            if state.unit_count() + 1 > self.hard_cap_units:
+            if not anchor_node_id or anchor_node_id not in state.node_ids:
+                return False, "anchor_node_missing"
+            pair = normalize_edge_pair(action.src_id, action.tgt_id)
+            if pair not in available_edges:
+                return False, "edge_not_in_neighborhood"
+            if node_id not in pair or anchor_node_id not in pair:
+                return False, "edge_not_binding_anchor_and_new_node"
+            distances = neighborhood.get("distances", {})
+            anchor_distance = int(distances.get(anchor_node_id, 10**6))
+            node_distance = int(distances.get(node_id, 10**6))
+            if (
+                self._requires_directional_consistency(state)
+                and node_distance <= anchor_distance
+            ):
+                return False, "direction_not_outward"
+            if state.unit_count() + 2 > self.hard_cap_units:
                 return False, "hard_cap_exceeded"
             state.node_ids.append(node_id)
+            state.edge_pairs.append([pair[0], pair[1]])
             return True, ""
         if action_type == "remove_node":
             node_id = action.node_id
@@ -624,18 +679,7 @@ class GraphEditingVLMSubgraphSampler:
             ]
             return True, ""
         if action_type == "add_edge":
-            pair = normalize_edge_pair(action.src_id, action.tgt_id)
-            if pair not in available_edges:
-                return False, "edge_not_in_neighborhood"
-            if pair[0] not in state.node_ids or pair[1] not in state.node_ids:
-                return False, "edge_nodes_missing"
-            normalized_pairs = {normalize_edge_pair(*pair_item) for pair_item in state.edge_pairs}
-            if pair in normalized_pairs:
-                return False, "edge_already_present"
-            if state.unit_count() + 1 > self.hard_cap_units:
-                return False, "hard_cap_exceeded"
-            state.edge_pairs.append([pair[0], pair[1]])
-            return True, ""
+            return False, "add_edge_disabled_use_add_node_binding"
         if action_type == "remove_edge":
             pair = normalize_edge_pair(action.src_id, action.tgt_id)
             before = len(state.edge_pairs)
