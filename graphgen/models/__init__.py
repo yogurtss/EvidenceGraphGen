@@ -56,6 +56,7 @@ if TYPE_CHECKING:
     from .splitter import ChineseRecursiveTextSplitter, RecursiveCharacterSplitter
     from .subgraph_sampler import (
         FamilyAwareVLMSubgraphSampler,
+        FamilySubgraphOrchestrator,
         GraphEditingVLMSubgraphSampler,
         SchemaGuidedVLMSubgraphSampler,
         VLMSubgraphSampler,
@@ -122,6 +123,7 @@ _import_map = {
     "RecursiveCharacterSplitter": ".splitter",
     "GraphEditingVLMSubgraphSampler": ".subgraph_sampler",
     "FamilyAwareVLMSubgraphSampler": ".subgraph_sampler",
+    "FamilySubgraphOrchestrator": ".subgraph_sampler",
     "SchemaGuidedVLMSubgraphSampler": ".subgraph_sampler",
     "VLMSubgraphSampler": ".subgraph_sampler",
     # Tokenizer

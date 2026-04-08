@@ -593,8 +593,7 @@ class GraphEditingVLMSubgraphSampler:
                     note=compact_text(item.get("note", ""), limit=160),
                 )
             )
-        # Enforce one action per round for predictable edit trajectories.
-        return actions[:1]
+        return actions
 
     def _apply_editor_state_updates(
         self,
@@ -645,9 +644,28 @@ class GraphEditingVLMSubgraphSampler:
                 return False, "node_not_in_neighborhood"
             if node_id in state.node_ids:
                 return False, "node_already_present"
+            pair = normalize_edge_pair(action.src_id, action.tgt_id)
+            if pair in available_edges and node_id in pair:
+                candidate_anchor = pair[0] if pair[1] == node_id else pair[1]
+                if candidate_anchor in state.node_ids:
+                    anchor_node_id = candidate_anchor
+            if (not anchor_node_id or anchor_node_id not in state.node_ids) and pair not in available_edges:
+                for candidate_pair in available_edges:
+                    if node_id not in candidate_pair:
+                        continue
+                    candidate_anchor = (
+                        candidate_pair[0]
+                        if candidate_pair[1] == node_id
+                        else candidate_pair[1]
+                    )
+                    if candidate_anchor in state.node_ids:
+                        pair = candidate_pair
+                        anchor_node_id = candidate_anchor
+                        break
             if not anchor_node_id or anchor_node_id not in state.node_ids:
                 return False, "anchor_node_missing"
-            pair = normalize_edge_pair(action.src_id, action.tgt_id)
+            if pair not in available_edges:
+                pair = normalize_edge_pair(anchor_node_id, node_id)
             if pair not in available_edges:
                 return False, "edge_not_in_neighborhood"
             if node_id not in pair or anchor_node_id not in pair:

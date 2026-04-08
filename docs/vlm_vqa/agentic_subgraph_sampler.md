@@ -18,6 +18,10 @@ build_grounded_tree_kg -> sample_subgraph_v3 -> generate(method=auto)
 
 - `docs/vlm_vqa/agentic_subgraph_v3.md`
 
+如果你想看新的并行 family-decoupled 方案，请单独阅读：
+
+- `docs/vlm_vqa/family_agents/README.md`
+
 它们都面向技术文档图像，只是内部策略不同：
 
 - `sample_subgraph`

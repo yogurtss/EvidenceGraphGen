@@ -15,6 +15,33 @@ from .v3_prompts import build_v3_editor_prompt, build_v3_judge_prompt
 class FamilyAwareVLMSubgraphSampler(GraphEditingVLMSubgraphSampler):
     FAMILY_ORDER = ("atomic", "aggregated", "multi_hop")
 
+    def _parse_actions(self, raw_actions: list[Any]) -> list[GraphEditAction]:
+        actions = []
+        for item in raw_actions:
+            if not isinstance(item, dict):
+                continue
+            action_type = str(item.get("action_type", "")).strip()
+            if not action_type:
+                continue
+            actions.append(
+                GraphEditAction(
+                    action_type=action_type,
+                    node_id=str(item.get("node_id", "")).strip(),
+                    anchor_node_id=str(item.get("anchor_node_id", "")).strip(),
+                    src_id=str(item.get("src_id", "")).strip(),
+                    tgt_id=str(item.get("tgt_id", "")).strip(),
+                    intent=compact_text(item.get("intent", ""), limit=120),
+                    technical_focus=compact_text(item.get("technical_focus", ""), limit=80),
+                    approved_question_types=[
+                        str(q).strip()
+                        for q in item.get("approved_question_types", [])
+                        if str(q).strip()
+                    ],
+                    note=compact_text(item.get("note", ""), limit=160),
+                )
+            )
+        return actions
+
     def __init__(
         self,
         graph,
@@ -576,7 +603,7 @@ class FamilyAwareVLMSubgraphSampler(GraphEditingVLMSubgraphSampler):
             return (
                 len(state.node_ids) >= 3
                 and len(state.edge_pairs) >= 2
-                and self._breadth_score(seed_node_id, state) >= 2
+                and self._max_path_distance_from_seed(seed_node_id, state) <= 2
             )
         max_distance = self._max_path_distance_from_seed(seed_node_id, state)
         branch_edges = max(0, len(state.edge_pairs) - max_distance)

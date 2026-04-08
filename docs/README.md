@@ -11,14 +11,15 @@
 1. `docs/vlm_vqa/architecture.md`
 2. `docs/vlm_vqa/agentic_subgraph_sampler.md`
 3. `docs/vlm_vqa/agentic_subgraph_v3.md`
-4. `docs/vlm_vqa/schema_guided_subgraph.md`
-5. `docs/vlm_vqa/research.md`
-6. `docs/vlm_vqa/roadmap.md`
-7. `docs/vlm_vqa/plans/kg_grounding.md`
-8. `docs/vlm_vqa/plans/multimodal_alignment.md`
-9. `docs/vlm_vqa/plans/question_depth.md`
-10. `docs/vlm_vqa/plans/eval_benchmark.md`
-11. `docs/vlm_vqa/execution/p0_checklist.md`
+4. `docs/vlm_vqa/family_agents/README.md`
+5. `docs/vlm_vqa/schema_guided_subgraph.md`
+6. `docs/vlm_vqa/research.md`
+7. `docs/vlm_vqa/roadmap.md`
+8. `docs/vlm_vqa/plans/kg_grounding.md`
+9. `docs/vlm_vqa/plans/multimodal_alignment.md`
+10. `docs/vlm_vqa/plans/question_depth.md`
+11. `docs/vlm_vqa/plans/eval_benchmark.md`
+12. `docs/vlm_vqa/execution/p0_checklist.md`
 
 目录含义：
 
@@ -28,6 +29,8 @@
   - value-aware agentic subgraph sampler 的目标、实现细节与配置入口
 - `agentic_subgraph_v3.md`
   - family-aware v3 sampler 的设计动机、三类 family 分工与配置入口
+- `family_agents/README.md`
+  - 新的 family-decoupled sampler 与 `generate_agentic_vqa` 联合闭环
 - `schema_guided_subgraph.md`
   - schema-guided subgraph sampler 的设计定位、执行逻辑与配置入口
 - `research.md`
