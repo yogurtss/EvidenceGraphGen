@@ -645,6 +645,20 @@ class GraphEditingVLMSubgraphSampler:
                 return False, "node_not_in_neighborhood"
             if node_id in state.node_ids:
                 return False, "node_already_present"
+            repaired = self._repair_add_node_binding(
+                state=state,
+                node_id=node_id,
+                anchor_node_id=anchor_node_id,
+                src_id=action.src_id,
+                tgt_id=action.tgt_id,
+                available_edges=available_edges,
+            )
+            if repaired is not None:
+                repaired_anchor_node_id, repaired_pair, repaired_reason = repaired
+                action.anchor_node_id = repaired_anchor_node_id
+                action.src_id = repaired_pair[0]
+                action.tgt_id = repaired_pair[1]
+                anchor_node_id = repaired_anchor_node_id
             if not anchor_node_id or anchor_node_id not in state.node_ids:
                 return False, "anchor_node_missing"
             pair = normalize_edge_pair(action.src_id, action.tgt_id)
@@ -664,7 +678,7 @@ class GraphEditingVLMSubgraphSampler:
                 return False, "hard_cap_exceeded"
             state.node_ids.append(node_id)
             state.edge_pairs.append([pair[0], pair[1]])
-            return True, ""
+            return True, repaired_reason if repaired is not None else ""
         if action_type == "remove_node":
             node_id = action.node_id
             if node_id == state.seed_node_id:
@@ -706,6 +720,46 @@ class GraphEditingVLMSubgraphSampler:
                 )
             return True, ""
         return False, "unsupported_action"
+
+    @staticmethod
+    def _repair_add_node_binding(
+        *,
+        state: CandidateSubgraphState,
+        node_id: str,
+        anchor_node_id: str,
+        src_id: str,
+        tgt_id: str,
+        available_edges: set[tuple[str, str]],
+    ) -> tuple[str, tuple[str, str], str] | None:
+        if not node_id:
+            return None
+
+        provided_pair = normalize_edge_pair(src_id, tgt_id)
+        if (
+            anchor_node_id
+            and anchor_node_id in state.node_ids
+            and node_id in provided_pair
+            and anchor_node_id in provided_pair
+            and provided_pair in available_edges
+        ):
+            return None
+
+        if anchor_node_id and anchor_node_id in state.node_ids:
+            candidate_pair = normalize_edge_pair(anchor_node_id, node_id)
+            if candidate_pair in available_edges:
+                return anchor_node_id, candidate_pair, "auto_repaired_add_node_binding"
+
+        inferred_anchors = [
+            current_node_id
+            for current_node_id in state.node_ids
+            if normalize_edge_pair(current_node_id, node_id) in available_edges
+        ]
+        if len(inferred_anchors) != 1:
+            return None
+
+        inferred_anchor = inferred_anchors[0]
+        inferred_pair = normalize_edge_pair(inferred_anchor, node_id)
+        return inferred_anchor, inferred_pair, "auto_inferred_anchor_for_add_node"
 
     def _collect_seed_scope(
         self, seed_node_id: str, nodes: list[tuple[str, dict]]
