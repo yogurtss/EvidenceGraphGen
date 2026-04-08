@@ -198,7 +198,7 @@ class FamilyAwareVLMSubgraphSampler(GraphEditingVLMSubgraphSampler):
                     frontier_updated = False
                     for action in actions:
                         before_units = state.unit_count()
-                        applied, ignored_reason = self._apply_action(
+                        applied, ignored_reason = self._apply_family_action(
                             state=state,
                             action=action,
                             neighborhood=neighborhood,
@@ -378,10 +378,126 @@ class FamilyAwareVLMSubgraphSampler(GraphEditingVLMSubgraphSampler):
             round_index=round_index,
             current_state=current_state,
             neighborhood_prompt=build_v2_neighborhood_prompt(self.graph, neighborhood),
+            selectable_node_prompt=self._build_selectable_node_prompt(
+                state=current_state,
+                neighborhood=neighborhood,
+            ),
             last_judge_feedback=last_judge_feedback,
         )
         raw = await self.llm_client.generate_answer(prompt, image_path=image_path or None)
         return self._extract_json_payload(raw)
+
+    def _apply_family_action(
+        self,
+        *,
+        state: CandidateSubgraphState,
+        action: GraphEditAction,
+        neighborhood: dict[str, Any],
+    ) -> tuple[bool, str]:
+        if action.action_type != "add_node":
+            return self._apply_action(state=state, action=action, neighborhood=neighborhood)
+
+        bindings = self._build_selectable_node_bindings(state=state, neighborhood=neighborhood)
+        candidate_bindings = bindings.get(action.node_id, [])
+        if not candidate_bindings:
+            return False, "node_not_in_selectable_nodes"
+
+        if state.unit_count() + 2 > self.hard_cap_units:
+            return False, "hard_cap_exceeded"
+
+        preferred_binding = None
+        if action.anchor_node_id:
+            for binding in candidate_bindings:
+                if binding["anchor_node_id"] == action.anchor_node_id:
+                    preferred_binding = binding
+                    break
+        if preferred_binding is None and action.src_id and action.tgt_id:
+            target_pair = normalize_edge_pair(action.src_id, action.tgt_id)
+            for binding in candidate_bindings:
+                if binding["edge_pair"] == target_pair:
+                    preferred_binding = binding
+                    break
+        selected_binding = preferred_binding or candidate_bindings[0]
+        anchor_node_id = selected_binding["anchor_node_id"]
+        pair = selected_binding["edge_pair"]
+
+        distances = neighborhood.get("distances", {})
+        anchor_distance = int(distances.get(anchor_node_id, 10**6))
+        node_distance = int(distances.get(action.node_id, 10**6))
+        if self._requires_directional_consistency(state) and node_distance <= anchor_distance:
+            return False, "direction_not_outward"
+
+        state.node_ids.append(action.node_id)
+        state.edge_pairs.append([pair[0], pair[1]])
+        action.anchor_node_id = anchor_node_id
+        action.src_id = pair[0]
+        action.tgt_id = pair[1]
+        return True, ""
+
+    def _build_selectable_node_bindings(
+        self,
+        *,
+        state: CandidateSubgraphState,
+        neighborhood: dict[str, Any],
+    ) -> dict[str, list[dict[str, Any]]]:
+        selected_nodes = set(state.node_ids)
+        distances = neighborhood.get("distances", {})
+        bindings: dict[str, list[dict[str, Any]]] = {}
+        for src_id, tgt_id, _edge_data in neighborhood.get("edges", []):
+            for anchor_id, candidate_id in ((src_id, tgt_id), (tgt_id, src_id)):
+                if anchor_id not in selected_nodes or candidate_id in selected_nodes:
+                    continue
+                edge_pair = normalize_edge_pair(anchor_id, candidate_id)
+                bindings.setdefault(candidate_id, []).append(
+                    {
+                        "anchor_node_id": anchor_id,
+                        "edge_pair": edge_pair,
+                    }
+                )
+        for node_id, options in bindings.items():
+            options.sort(
+                key=lambda item: (
+                    int(distances.get(item["anchor_node_id"], 10**6)),
+                    item["anchor_node_id"],
+                    item["edge_pair"],
+                )
+            )
+            deduped = []
+            seen = set()
+            for option in options:
+                signature = (option["anchor_node_id"], option["edge_pair"])
+                if signature in seen:
+                    continue
+                seen.add(signature)
+                deduped.append(option)
+            bindings[node_id] = deduped
+        return dict(
+            sorted(
+                bindings.items(),
+                key=lambda item: (int(distances.get(item[0], 10**6)), item[0]),
+            )
+        )
+
+    def _build_selectable_node_prompt(
+        self,
+        *,
+        state: CandidateSubgraphState,
+        neighborhood: dict[str, Any],
+    ) -> str:
+        bindings = self._build_selectable_node_bindings(state=state, neighborhood=neighborhood)
+        if not bindings:
+            return "none"
+        distances = neighborhood.get("distances", {})
+        lines = []
+        for index, (node_id, options) in enumerate(bindings.items(), start=1):
+            option_text = "; ".join(
+                f"anchor={item['anchor_node_id']}, edge=({item['edge_pair'][0]}, {item['edge_pair'][1]})"
+                for item in options[:4]
+            )
+            lines.append(
+                f"{index}. node_id={node_id} | distance={distances.get(node_id, 0)} | options: {option_text}"
+            )
+        return "\n".join(lines)
 
     async def _judge_family_state(
         self,
