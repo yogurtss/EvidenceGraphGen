@@ -509,7 +509,11 @@ class GraphEditingVLMSubgraphSampler:
             round_index=round_index,
             allowed_question_types=allowed_question_types,
             current_state=current_state,
-            neighborhood_prompt=build_v2_neighborhood_prompt(self.graph, neighborhood),
+            neighborhood_prompt=build_v2_neighborhood_prompt(
+                self.graph,
+                neighborhood,
+                current_state=current_state,
+            ),
             last_judge_feedback=last_judge_feedback,
         )
         raw = await self.llm_client.generate_answer(prompt, image_path=image_path or None)
@@ -640,18 +644,39 @@ class GraphEditingVLMSubgraphSampler:
             return True, ""
         if action_type == "add_node":
             node_id = action.node_id
-            anchor_node_id = action.anchor_node_id
             if node_id not in available_nodes:
                 return False, "node_not_in_neighborhood"
             if node_id in state.node_ids:
                 return False, "node_already_present"
-            if not anchor_node_id or anchor_node_id not in state.node_ids:
-                return False, "anchor_node_missing"
-            pair = normalize_edge_pair(action.src_id, action.tgt_id)
-            if pair not in available_edges:
-                return False, "edge_not_in_neighborhood"
-            if node_id not in pair or anchor_node_id not in pair:
-                return False, "edge_not_binding_anchor_and_new_node"
+            bindings = self._collect_add_node_bindings(
+                state=state,
+                neighborhood=neighborhood,
+            )
+            candidates = bindings.get(node_id, [])
+            if not candidates:
+                return False, "node_not_expandable_from_current_state"
+            if action.anchor_node_id:
+                candidates = [
+                    (anchor_node_id, pair)
+                    for anchor_node_id, pair in candidates
+                    if anchor_node_id == action.anchor_node_id
+                ]
+                if not candidates:
+                    return False, "anchor_node_missing"
+            if action.src_id and action.tgt_id:
+                requested_pair = normalize_edge_pair(action.src_id, action.tgt_id)
+                if requested_pair not in available_edges:
+                    return False, "edge_not_in_neighborhood"
+                candidates = [
+                    (anchor_node_id, pair)
+                    for anchor_node_id, pair in candidates
+                    if pair == requested_pair
+                ]
+                if not candidates:
+                    return False, "edge_not_binding_anchor_and_new_node"
+            if not candidates:
+                return False, "node_not_expandable_from_current_state"
+            anchor_node_id, pair = sorted(candidates, key=lambda item: (item[0], item[1]))[0]
             distances = neighborhood.get("distances", {})
             anchor_distance = int(distances.get(anchor_node_id, 10**6))
             node_distance = int(distances.get(node_id, 10**6))
@@ -662,6 +687,8 @@ class GraphEditingVLMSubgraphSampler:
                 return False, "direction_not_outward"
             if state.unit_count() + 2 > self.hard_cap_units:
                 return False, "hard_cap_exceeded"
+            action.anchor_node_id = anchor_node_id
+            action.src_id, action.tgt_id = pair
             state.node_ids.append(node_id)
             state.edge_pairs.append([pair[0], pair[1]])
             return True, ""
@@ -706,6 +733,29 @@ class GraphEditingVLMSubgraphSampler:
                 )
             return True, ""
         return False, "unsupported_action"
+
+    def _collect_add_node_bindings(
+        self,
+        *,
+        state: CandidateSubgraphState,
+        neighborhood: dict[str, Any],
+    ) -> dict[str, list[tuple[str, tuple[str, str]]]]:
+        state_nodes = set(state.node_ids)
+        bindings: dict[str, list[tuple[str, tuple[str, str]]]] = {}
+        for src_id, tgt_id, _edge_data in neighborhood.get("edges", []):
+            src_id = str(src_id)
+            tgt_id = str(tgt_id)
+            pair = normalize_edge_pair(src_id, tgt_id)
+            src_in = src_id in state_nodes
+            tgt_in = tgt_id in state_nodes
+            if src_in == tgt_in:
+                continue
+            anchor_node_id = src_id if src_in else tgt_id
+            next_node_id = tgt_id if src_in else src_id
+            if next_node_id in state_nodes:
+                continue
+            bindings.setdefault(next_node_id, []).append((anchor_node_id, pair))
+        return bindings
 
     def _collect_seed_scope(
         self, seed_node_id: str, nodes: list[tuple[str, dict]]
