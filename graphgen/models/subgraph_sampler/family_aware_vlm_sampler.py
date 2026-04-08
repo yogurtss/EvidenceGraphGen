@@ -1,6 +1,11 @@
 from typing import Any
 
-from .artifacts import JudgeScorecard, SelectedSubgraphArtifact, compact_text
+from .artifacts import (
+    JudgeScorecard,
+    SelectedSubgraphArtifact,
+    compact_text,
+    normalize_edge_pair,
+)
 from .graph_editing_vlm_sampler import GraphEditingVLMSubgraphSampler
 from .v2_artifacts import AgentSessionTrace, CandidateSubgraphState, GraphEditAction
 from .v2_prompts import build_v2_candidate_prompt, build_v2_neighborhood_prompt
@@ -168,6 +173,7 @@ class FamilyAwareVLMSubgraphSampler(GraphEditingVLMSubgraphSampler):
                 )
                 candidate_states.append({**state.to_dict(), "qa_family": qa_family})
                 last_judge_feedback = None
+                frontier_node_id = seed_node_id
 
                 for round_index in range(1, settings["max_rounds"] + 1):
                     state.status = "editing"
@@ -189,6 +195,7 @@ class FamilyAwareVLMSubgraphSampler(GraphEditingVLMSubgraphSampler):
                     actions = self._parse_actions(editor_payload.get("actions", []))
                     commit_requested = False
                     round_actions = []
+                    frontier_updated = False
                     for action in actions:
                         before_units = state.unit_count()
                         applied, ignored_reason = self._apply_action(
@@ -204,6 +211,13 @@ class FamilyAwareVLMSubgraphSampler(GraphEditingVLMSubgraphSampler):
                         round_actions.append(action.to_dict())
                         if action.action_type == "commit_for_judgement":
                             commit_requested = True
+                        if (
+                            qa_family == "multi_hop"
+                            and action.action_type == "add_node"
+                            and action.applied
+                        ):
+                            frontier_node_id = action.node_id
+                            frontier_updated = True
 
                     if not round_actions:
                         round_actions.append(
@@ -226,6 +240,23 @@ class FamilyAwareVLMSubgraphSampler(GraphEditingVLMSubgraphSampler):
                         }
                     )
                     candidate_states.append({**state.to_dict(), "qa_family": qa_family})
+
+                    if qa_family == "multi_hop" and frontier_updated and frontier_node_id:
+                        neighborhood, current_hops = self._advance_multihop_frontier(
+                            seed_node_id=seed_node_id,
+                            seed_scope=seed_scope,
+                            state=state,
+                            frontier_node_id=frontier_node_id,
+                            current_hops=current_hops,
+                            max_hops=settings["max_hops"],
+                        )
+                        neighborhood_trace.append(
+                            {
+                                **self._neighborhood_snapshot(neighborhood, hop=current_hops),
+                                "qa_family": qa_family,
+                                "frontier_node_id": frontier_node_id,
+                            }
+                        )
 
                     if not commit_requested and state.unit_count() >= settings["hard_cap_units"]:
                         commit_requested = True
@@ -438,6 +469,60 @@ class FamilyAwareVLMSubgraphSampler(GraphEditingVLMSubgraphSampler):
             and len(state.edge_pairs) >= 2
             and max_distance >= 2
             and branch_edges <= 2
+            and self._is_directionally_consistent(state)
+        )
+
+    def _advance_multihop_frontier(
+        self,
+        *,
+        seed_node_id: str,
+        seed_scope: set[str],
+        state: CandidateSubgraphState,
+        frontier_node_id: str,
+        current_hops: int,
+        max_hops: int,
+    ) -> tuple[dict[str, Any], int]:
+        next_hops = min(max_hops, current_hops + 1)
+        expanded = self._collect_neighborhood(
+            seed_node_id=seed_node_id,
+            max_hops=next_hops,
+            seed_scope=seed_scope,
+        )
+        distances = expanded.get("distances", {})
+        frontier_distance = distances.get(frontier_node_id)
+        if frontier_distance is None:
+            return expanded, next_hops
+
+        available_edge_pairs = {
+            normalize_edge_pair(src_id, tgt_id)
+            for src_id, tgt_id, _ in expanded.get("edges", [])
+        }
+        allowed_nodes = set(state.node_ids)
+        for node_id in expanded.get("node_ids", []):
+            if node_id in allowed_nodes:
+                continue
+            if distances.get(node_id) != frontier_distance + 1:
+                continue
+            if normalize_edge_pair(frontier_node_id, node_id) in available_edge_pairs:
+                allowed_nodes.add(node_id)
+
+        filtered_edges = [
+            (src_id, tgt_id, edge_data)
+            for src_id, tgt_id, edge_data in expanded.get("edges", [])
+            if src_id in allowed_nodes and tgt_id in allowed_nodes
+        ]
+        ranked_nodes = [seed_node_id] + sorted(
+            [node_id for node_id in allowed_nodes if node_id != seed_node_id],
+            key=lambda item: (distances.get(item, 99), item),
+        )
+        return (
+            {
+                "node_ids": ranked_nodes,
+                "edges": filtered_edges,
+                "distances": distances,
+                "max_hops": next_hops,
+            },
+            next_hops,
         )
 
     def _breadth_score(
