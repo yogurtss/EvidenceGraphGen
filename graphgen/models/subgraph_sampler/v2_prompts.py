@@ -8,7 +8,9 @@ from .v2_artifacts import CandidateSubgraphState, JudgeFeedback
 
 
 def build_v2_neighborhood_prompt(
-    graph: BaseGraphStorage, neighborhood: dict[str, Any]
+    graph: BaseGraphStorage,
+    neighborhood: dict[str, Any],
+    current_state: CandidateSubgraphState | None = None,
 ) -> str:
     lines = ["Nodes:"]
     for index, node_id in enumerate(neighborhood.get("node_ids", [])[:24], start=1):
@@ -28,6 +30,34 @@ def build_v2_neighborhood_prompt(
             f"| desc={compact_text(edge_data.get('description', ''), limit=120)} "
             f"| evidence={compact_text(edge_data.get('evidence_span', ''), limit=80)}"
         )
+    if current_state is not None:
+        state_nodes = set(current_state.node_ids)
+        available_edges = [
+            (str(src_id), str(tgt_id))
+            for src_id, tgt_id, _edge_data in neighborhood.get("edges", [])
+        ]
+        expansion_rows = []
+        for src_id, tgt_id in available_edges:
+            pair = tuple(sorted((src_id, tgt_id)))
+            in_src = src_id in state_nodes
+            in_tgt = tgt_id in state_nodes
+            if in_src == in_tgt:
+                continue
+            anchor_node_id = src_id if in_src else tgt_id
+            next_node_id = tgt_id if in_src else src_id
+            if next_node_id in state_nodes:
+                continue
+            expansion_rows.append((anchor_node_id, next_node_id, pair[0], pair[1]))
+        lines.append("Add-node bindings from current candidate (anchor -> next node via edge):")
+        if expansion_rows:
+            for index, (anchor_node_id, next_node_id, src_id, tgt_id) in enumerate(
+                sorted(set(expansion_rows))[:36], start=1
+            ):
+                lines.append(
+                    f"{index}. {anchor_node_id} -> {next_node_id} | edge=({src_id}, {tgt_id})"
+                )
+        else:
+            lines.append("none")
     return "\n".join(lines)
 
 

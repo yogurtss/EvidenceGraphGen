@@ -377,7 +377,11 @@ class FamilyAwareVLMSubgraphSampler(GraphEditingVLMSubgraphSampler):
             hard_cap_units=hard_cap_units,
             round_index=round_index,
             current_state=current_state,
-            neighborhood_prompt=build_v2_neighborhood_prompt(self.graph, neighborhood),
+            neighborhood_prompt=build_v2_neighborhood_prompt(
+                self.graph,
+                neighborhood,
+                current_state=current_state,
+            ),
             last_judge_feedback=last_judge_feedback,
         )
         raw = await self.llm_client.generate_answer(prompt, image_path=image_path or None)
