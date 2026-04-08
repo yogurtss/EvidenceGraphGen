@@ -46,6 +46,7 @@ def build_v3_editor_prompt(
     round_index: int,
     current_state: CandidateSubgraphState,
     neighborhood_prompt: str,
+    selectable_node_prompt: str,
     last_judge_feedback: JudgeFeedback | None,
 ) -> str:
     judge_payload = (
@@ -65,12 +66,16 @@ def build_v3_editor_prompt(
         "Valid actions: query_nodes, query_edges, add_node, remove_node, "
         "remove_edge, revise_intent, commit_for_judgement.\n"
         "Action policy: exactly ONE action per round. "
-        "When action_type is add_node, you MUST provide node_id + anchor_node_id and the edge (src_id, tgt_id) "
-        "that connects anchor node and new node in the same action.\n"
+        "When action_type is add_node, choose node_id ONLY from `Selectable add_node options` below. "
+        "Each selectable node is already bound to one or more valid (anchor_node_id, edge) pairs. "
+        "Prefer providing anchor_node_id that matches one listed option. "
+        "If your provided src_id/tgt_id is inconsistent, executor will ignore it and use the bound edge.\n"
         "Current candidate state:\n"
         f"{json.dumps(current_state.to_dict(), ensure_ascii=False)}\n"
         "Last judge feedback:\n"
         f"{judge_payload}\n"
+        "Selectable add_node options (derived from current candidate + neighborhood):\n"
+        f"{selectable_node_prompt}\n"
         "Available neighborhood:\n"
         f"{neighborhood_prompt}\n"
         "Return strict JSON:\n"
