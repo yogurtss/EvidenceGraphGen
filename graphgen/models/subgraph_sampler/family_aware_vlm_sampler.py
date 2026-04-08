@@ -20,6 +20,8 @@ class FamilyAwareVLMSubgraphSampler(GraphEditingVLMSubgraphSampler):
         max_vqas_per_selected_subgraph: int = 2,
         judge_pass_threshold: float = 0.68,
         max_multi_hop_hops: int = 3,
+        min_subgraphs_per_family: int = 2,
+        max_subgraphs_per_family: int = 3,
     ):
         super().__init__(
             graph,
@@ -31,6 +33,10 @@ class FamilyAwareVLMSubgraphSampler(GraphEditingVLMSubgraphSampler):
             judge_pass_threshold=judge_pass_threshold,
         )
         self.max_multi_hop_hops = max(2, int(max_multi_hop_hops))
+        self.min_subgraphs_per_family = max(1, int(min_subgraphs_per_family))
+        self.max_subgraphs_per_family = max(
+            self.min_subgraphs_per_family, int(max_subgraphs_per_family)
+        )
 
     async def sample(
         self,
@@ -99,7 +105,6 @@ class FamilyAwareVLMSubgraphSampler(GraphEditingVLMSubgraphSampler):
             candidate_states.extend(result["candidate_states"])
             agent_sessions.append(result["agent_session"])
 
-        selected_subgraphs = selected_subgraphs[:3]
         if selected_subgraphs:
             termination_reason = "family_sessions_completed"
         elif family_results:
@@ -129,177 +134,175 @@ class FamilyAwareVLMSubgraphSampler(GraphEditingVLMSubgraphSampler):
         qa_family: str,
         seed_scope: set[str],
     ) -> dict[str, Any]:
+        _ = nodes
         settings = self._family_settings(qa_family)
         original_hard_cap_units = self.hard_cap_units
         self.hard_cap_units = settings["hard_cap_units"]
+        current_hops = settings["start_hops"]
         neighborhood = self._collect_neighborhood(
             seed_node_id=seed_node_id,
-            max_hops=settings["start_hops"],
+            max_hops=current_hops,
             seed_scope=seed_scope,
         )
         neighborhood_trace = [
             {
-                **self._neighborhood_snapshot(neighborhood, hop=settings["start_hops"]),
+                **self._neighborhood_snapshot(neighborhood, hop=current_hops),
                 "qa_family": qa_family,
             }
         ]
-        state = CandidateSubgraphState(
-            candidate_id=f"{qa_family}-candidate-1",
-            seed_node_id=seed_node_id,
-            approved_question_types=[qa_family],
-            node_ids=[seed_node_id],
-        )
-        candidate_states = [{**state.to_dict(), "qa_family": qa_family}]
+        candidate_states: list[dict[str, Any]] = []
         edit_trace: list[dict[str, Any]] = []
         judge_trace: list[dict[str, Any]] = []
         candidate_bundle: list[dict[str, Any]] = []
-        last_judge_feedback = None
-        current_hops = settings["start_hops"]
+        selected_subgraphs: list[dict[str, Any]] = []
+        selected_signatures: set[tuple[tuple[str, ...], tuple[tuple[str, str], ...]]] = set()
+        family_target = self._family_target_count(qa_family)
 
         try:
-            for round_index in range(1, settings["max_rounds"] + 1):
-                state.status = "editing"
-                editor_payload = await self._edit_family_round(
+            for candidate_index in range(1, family_target + 1):
+                state = CandidateSubgraphState(
+                    candidate_id=f"{qa_family}-candidate-{candidate_index}",
                     seed_node_id=seed_node_id,
-                    image_path=image_path,
-                    qa_family=qa_family,
-                    round_index=round_index,
-                    hard_cap_units=settings["hard_cap_units"],
-                    neighborhood=neighborhood,
-                    current_state=state,
-                    last_judge_feedback=last_judge_feedback,
-                )
-                self._apply_family_state_updates(
-                    state=state,
-                    payload=editor_payload,
-                    qa_family=qa_family,
-                )
-                actions = self._parse_actions(editor_payload.get("actions", []))
-                commit_requested = False
-                round_actions = []
-                for action in actions:
-                    before_units = state.unit_count()
-                    applied, ignored_reason = self._apply_action(
-                        state=state,
-                        action=action,
-                        neighborhood=neighborhood,
-                    )
-                    after_units = state.unit_count()
-                    action.applied = applied
-                    action.ignored_reason = ignored_reason
-                    action.before_units = before_units
-                    action.after_units = after_units
-                    round_actions.append(action.to_dict())
-                    if action.action_type == "commit_for_judgement":
-                        commit_requested = True
-
-                if not round_actions:
-                    round_actions.append(
-                        GraphEditAction(
-                            action_type="query_nodes",
-                            note="editor_returned_no_actions",
-                            applied=False,
-                            ignored_reason="no_actions",
-                            before_units=state.unit_count(),
-                            after_units=state.unit_count(),
-                        ).to_dict()
-                    )
-
-                edit_trace.append(
-                    {
-                        "qa_family": qa_family,
-                        "round_index": round_index,
-                        "actions": round_actions,
-                    }
+                    approved_question_types=[qa_family],
+                    node_ids=[seed_node_id],
                 )
                 candidate_states.append({**state.to_dict(), "qa_family": qa_family})
+                last_judge_feedback = None
 
-                if not commit_requested and state.unit_count() >= settings["hard_cap_units"]:
-                    commit_requested = True
-
-                if not commit_requested and round_index < settings["max_rounds"]:
-                    continue
-
-                judge_feedback = await self._judge_family_state(
-                    seed_node_id=seed_node_id,
-                    image_path=image_path,
-                    qa_family=qa_family,
-                    state=state,
-                )
-                last_judge_feedback = judge_feedback
-                judge_trace.append(
-                    {
-                        "qa_family": qa_family,
-                        "round_index": round_index,
-                        **judge_feedback.to_dict(),
-                    }
-                )
-                candidate_bundle.append(
-                    {
-                        "candidate_id": state.candidate_id,
-                        "qa_family": qa_family,
-                        "intent": state.intent,
-                        "node_ids": list(state.node_ids),
-                        "edge_pairs": [list(pair) for pair in state.edge_pairs],
-                        "judge_scores": judge_feedback.scorecard.to_dict(),
-                        "decision": "accepted" if judge_feedback.sufficient else "rejected",
-                        "rejection_reason": ""
-                        if judge_feedback.sufficient
-                        else judge_feedback.rejection_reason or "rejected_by_judge",
-                    }
-                )
-                if judge_feedback.sufficient and self._passes_family_postcheck(
-                    qa_family=qa_family,
-                    seed_node_id=seed_node_id,
-                    state=state,
-                ):
-                    state.status = "accepted"
-                    selected = self._materialize_family_selected_subgraph(
-                        qa_family=qa_family,
-                        state=state,
-                        judge_scorecard=judge_feedback.scorecard,
-                    )
-                    return {
-                        "selected_subgraphs": [selected.to_dict()],
-                        "candidate_bundle": candidate_bundle,
-                        "neighborhood_trace": neighborhood_trace,
-                        "edit_trace": edit_trace,
-                        "judge_trace": judge_trace,
-                        "candidate_states": candidate_states,
-                        "agent_session": {
-                            **AgentSessionTrace(
-                                session_id=f"{seed_node_id}-{qa_family}-v3",
-                                seed_node_id=seed_node_id,
-                                rounds=round_index,
-                                degraded=False,
-                                status="accepted",
-                                termination_reason="judge_marked_sufficient",
-                            ).to_dict(),
-                            "qa_family": qa_family,
-                        },
-                    }
-
-                if (
-                    judge_feedback.needs_expansion
-                    and current_hops < settings["max_hops"]
-                    and round_index < settings["max_rounds"]
-                ):
-                    current_hops += 1
-                    neighborhood = self._collect_neighborhood(
+                for round_index in range(1, settings["max_rounds"] + 1):
+                    state.status = "editing"
+                    editor_payload = await self._edit_family_round(
                         seed_node_id=seed_node_id,
-                        max_hops=current_hops,
-                        seed_scope=seed_scope,
+                        image_path=image_path,
+                        qa_family=qa_family,
+                        round_index=round_index,
+                        hard_cap_units=settings["hard_cap_units"],
+                        neighborhood=neighborhood,
+                        current_state=state,
+                        last_judge_feedback=last_judge_feedback,
                     )
-                    neighborhood_trace.append(
+                    self._apply_family_state_updates(
+                        state=state,
+                        payload=editor_payload,
+                        qa_family=qa_family,
+                    )
+                    actions = self._parse_actions(editor_payload.get("actions", []))
+                    commit_requested = False
+                    round_actions = []
+                    for action in actions:
+                        before_units = state.unit_count()
+                        applied, ignored_reason = self._apply_action(
+                            state=state,
+                            action=action,
+                            neighborhood=neighborhood,
+                        )
+                        after_units = state.unit_count()
+                        action.applied = applied
+                        action.ignored_reason = ignored_reason
+                        action.before_units = before_units
+                        action.after_units = after_units
+                        round_actions.append(action.to_dict())
+                        if action.action_type == "commit_for_judgement":
+                            commit_requested = True
+
+                    if not round_actions:
+                        round_actions.append(
+                            GraphEditAction(
+                                action_type="query_nodes",
+                                note="editor_returned_no_actions",
+                                applied=False,
+                                ignored_reason="no_actions",
+                                before_units=state.unit_count(),
+                                after_units=state.unit_count(),
+                            ).to_dict()
+                        )
+
+                    edit_trace.append(
                         {
-                            **self._neighborhood_snapshot(neighborhood, hop=current_hops),
                             "qa_family": qa_family,
+                            "candidate_id": state.candidate_id,
+                            "round_index": round_index,
+                            "actions": round_actions,
                         }
                     )
-                    continue
+                    candidate_states.append({**state.to_dict(), "qa_family": qa_family})
+
+                    if not commit_requested and state.unit_count() >= settings["hard_cap_units"]:
+                        commit_requested = True
+                    if not commit_requested and round_index < settings["max_rounds"]:
+                        continue
+
+                    judge_feedback = await self._judge_family_state(
+                        seed_node_id=seed_node_id,
+                        image_path=image_path,
+                        qa_family=qa_family,
+                        state=state,
+                    )
+                    last_judge_feedback = judge_feedback
+                    judge_trace.append(
+                        {
+                            "qa_family": qa_family,
+                            "candidate_id": state.candidate_id,
+                            "round_index": round_index,
+                            **judge_feedback.to_dict(),
+                        }
+                    )
+                    candidate_bundle.append(
+                        {
+                            "candidate_id": state.candidate_id,
+                            "qa_family": qa_family,
+                            "intent": state.intent,
+                            "node_ids": list(state.node_ids),
+                            "edge_pairs": [list(pair) for pair in state.edge_pairs],
+                            "judge_scores": judge_feedback.scorecard.to_dict(),
+                            "decision": "accepted" if judge_feedback.sufficient else "rejected",
+                            "rejection_reason": ""
+                            if judge_feedback.sufficient
+                            else judge_feedback.rejection_reason or "rejected_by_judge",
+                        }
+                    )
+
+                    if judge_feedback.sufficient and self._passes_family_postcheck(
+                        qa_family=qa_family,
+                        seed_node_id=seed_node_id,
+                        state=state,
+                    ):
+                        signature = self._candidate_signature(state)
+                        if signature not in selected_signatures:
+                            selected_signatures.add(signature)
+                            state.status = "accepted"
+                            selected = self._materialize_family_selected_subgraph(
+                                qa_family=qa_family,
+                                state=state,
+                                judge_scorecard=judge_feedback.scorecard,
+                            )
+                            selected_subgraphs.append(selected.to_dict())
+                        break
+
+                    if (
+                        judge_feedback.needs_expansion
+                        and current_hops < settings["max_hops"]
+                        and round_index < settings["max_rounds"]
+                    ):
+                        current_hops += 1
+                        neighborhood = self._collect_neighborhood(
+                            seed_node_id=seed_node_id,
+                            max_hops=current_hops,
+                            seed_scope=seed_scope,
+                        )
+                        neighborhood_trace.append(
+                            {
+                                **self._neighborhood_snapshot(neighborhood, hop=current_hops),
+                                "qa_family": qa_family,
+                            }
+                        )
+                        continue
+
+                if len(selected_subgraphs) >= self.max_subgraphs_per_family:
+                    break
 
             return {
-                "selected_subgraphs": [],
+                "selected_subgraphs": selected_subgraphs,
                 "candidate_bundle": candidate_bundle,
                 "neighborhood_trace": neighborhood_trace,
                 "edit_trace": edit_trace,
@@ -309,10 +312,14 @@ class FamilyAwareVLMSubgraphSampler(GraphEditingVLMSubgraphSampler):
                     **AgentSessionTrace(
                         session_id=f"{seed_node_id}-{qa_family}-v3",
                         seed_node_id=seed_node_id,
-                        rounds=settings["max_rounds"],
+                        rounds=settings["max_rounds"] * family_target,
                         degraded=False,
-                        status="abstained",
-                        termination_reason="no_candidate_passed_judge",
+                        status="accepted" if selected_subgraphs else "abstained",
+                        termination_reason=(
+                            "family_target_satisfied"
+                            if len(selected_subgraphs) >= self.min_subgraphs_per_family
+                            else "insufficient_unique_family_subgraphs"
+                        ),
                     ).to_dict(),
                     "qa_family": qa_family,
                 },
@@ -416,15 +423,34 @@ class FamilyAwareVLMSubgraphSampler(GraphEditingVLMSubgraphSampler):
             return (
                 len(state.node_ids) >= 2
                 and len(state.edge_pairs) >= 1
-                and len(state.node_ids) + len(state.edge_pairs) <= 4
+                and len(state.node_ids) + len(state.edge_pairs) <= 3
             )
         if qa_family == "aggregated":
-            return len(state.node_ids) >= 3 and len(state.edge_pairs) >= 2
+            return (
+                len(state.node_ids) >= 3
+                and len(state.edge_pairs) >= 2
+                and self._breadth_score(seed_node_id, state) >= 2
+            )
+        max_distance = self._max_path_distance_from_seed(seed_node_id, state)
+        branch_edges = max(0, len(state.edge_pairs) - max_distance)
         return (
             len(state.node_ids) >= 3
             and len(state.edge_pairs) >= 2
-            and self._max_path_distance_from_seed(seed_node_id, state) >= 2
+            and max_distance >= 2
+            and branch_edges <= 2
         )
+
+    def _breadth_score(
+        self,
+        seed_node_id: str,
+        state: CandidateSubgraphState,
+    ) -> int:
+        adjacency = {node_id: set() for node_id in state.node_ids}
+        for src_id, tgt_id in state.edge_pairs:
+            if src_id in adjacency and tgt_id in adjacency:
+                adjacency[src_id].add(tgt_id)
+                adjacency[tgt_id].add(src_id)
+        return len(adjacency.get(seed_node_id, set()))
 
     def _max_path_distance_from_seed(
         self,
@@ -506,6 +532,21 @@ class FamilyAwareVLMSubgraphSampler(GraphEditingVLMSubgraphSampler):
             "neighborhood_trace": neighborhood_trace,
             "termination_reason": termination_reason,
         }
+
+    def _family_target_count(self, qa_family: str) -> int:
+        if qa_family == "aggregated":
+            return max(self.min_subgraphs_per_family, self.max_subgraphs_per_family - 1)
+        return self.max_subgraphs_per_family
+
+    @staticmethod
+    def _candidate_signature(
+        state: CandidateSubgraphState,
+    ) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...]]:
+        node_sig = tuple(sorted(set(state.node_ids)))
+        edge_sig = tuple(
+            sorted(tuple(sorted((src_id, tgt_id))) for src_id, tgt_id in state.edge_pairs)
+        )
+        return (node_sig, edge_sig)
 
     @staticmethod
     def _extract_json_payload(raw: str) -> dict[str, Any]:

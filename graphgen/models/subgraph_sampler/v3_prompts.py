@@ -6,16 +6,19 @@ from .v2_artifacts import CandidateSubgraphState, JudgeFeedback
 FAMILY_EDITOR_GUIDANCE = {
     "atomic": (
         "Target a compact subgraph for one atomic image-grounded QA. "
-        "Prefer a single directly supported fact, parameter readout, or one-hop relation from the visual seed. "
+        "Prefer a single-edge minimal closure first (seed + one supporting relation), "
+        "then expand only if judge feedback explicitly requires it. "
         "Do not over-expand."
     ),
     "aggregated": (
         "Target an aggregated image-grounded QA. "
-        "Collect same-theme neighbors that jointly support a coherent technical explanation around one intent."
+        "Prioritize breadth: collect same-theme sibling neighbors around one intent, "
+        "and avoid collapsing into only one narrow chain."
     ),
     "multi_hop": (
         "Target a multi-hop image-grounded QA. "
-        "Expand toward a verifiable reasoning chain with at least two edges, and prefer deeper evidence closure over shallow readout."
+        "Prioritize depth: follow one verifiable chain step-by-step with at least two edges, "
+        "and avoid adding many same-layer side nodes."
     ),
 }
 
