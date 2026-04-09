@@ -135,6 +135,9 @@ class AggregatedFamilyAgent(BaseFamilyAgent):
         return revised
 
     def _judge_state(self, state: FamilySubgraphState) -> FamilyJudgeFeedback:
+        llm_feedback = self._llm_judge_state(state)
+        if llm_feedback is not None:
+            return llm_feedback
         node_count = len(state.selected_node_ids)
         edge_count = len(state.selected_edge_pairs)
         sufficient = node_count >= 3 and edge_count >= 2
