@@ -7,6 +7,14 @@ from .types import FamilyJudgeFeedback, FamilySubgraphState
 class MultiHopFamilyAgent(BaseFamilyAgent):
     qa_family = "multi_hop"
 
+    def __init__(self, graph, llm_client=None, **kwargs):
+        super().__init__(
+            graph,
+            llm_client,
+            preserve_edge_direction=True,
+            **kwargs,
+        )
+
     def _build_candidate_states(
         self,
         *,

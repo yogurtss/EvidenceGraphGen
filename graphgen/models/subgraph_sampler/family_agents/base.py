@@ -36,12 +36,14 @@ class BaseFamilyAgent(ABC):
         max_selected_subgraphs: int = 3,
         judge_pass_threshold: float = 0.68,
         max_hops: int = 3,
+        preserve_edge_direction: bool = False,
     ):
         self.graph = graph
         self.llm_client = llm_client
         self.max_selected_subgraphs = max(1, int(max_selected_subgraphs))
         self.judge_pass_threshold = float(judge_pass_threshold)
         self.max_hops = max(1, int(max_hops))
+        self.preserve_edge_direction = bool(preserve_edge_direction)
 
     def sample(
         self,
@@ -316,7 +318,10 @@ class BaseFamilyAgent(ABC):
                 node_data = self.graph.get_node(neighbor_id) or {}
                 if not self._passes_provenance_guardrail(node_data, edge_data, seed_scope):
                     continue
-                edge_pair = list(normalize_edge_pair(bind_from_node_id, neighbor_id))
+                if self.preserve_edge_direction:
+                    edge_pair = [str(bind_from_node_id), neighbor_id]
+                else:
+                    edge_pair = list(normalize_edge_pair(bind_from_node_id, neighbor_id))
                 signature = (neighbor_id, bind_from_node_id, tuple(edge_pair))
                 if signature in seen:
                     continue
@@ -480,9 +485,15 @@ class BaseFamilyAgent(ABC):
     ) -> None:
         if candidate.candidate_node_id not in state.selected_node_ids:
             state.selected_node_ids.append(candidate.candidate_node_id)
-        normalized_pair = list(normalize_edge_pair(*candidate.bound_edge_pair))
-        if normalized_pair not in state.selected_edge_pairs:
-            state.selected_edge_pairs.append(normalized_pair)
+        if self.preserve_edge_direction:
+            directed_pair = [str(candidate.bound_edge_pair[0]), str(candidate.bound_edge_pair[1])]
+            selected_edge_pair_set = {(pair[0], pair[1]) for pair in state.selected_edge_pairs}
+            if (directed_pair[0], directed_pair[1]) not in selected_edge_pair_set:
+                state.selected_edge_pairs.append(directed_pair)
+        else:
+            normalized_pair = list(normalize_edge_pair(*candidate.bound_edge_pair))
+            if normalized_pair not in state.selected_edge_pairs:
+                state.selected_edge_pairs.append(normalized_pair)
         state.frontier_node_id = candidate.candidate_node_id
         state.theme_signature = state.theme_signature or candidate.theme_signature
         state.candidate_pool = [
@@ -517,10 +528,13 @@ class BaseFamilyAgent(ABC):
         state: FamilySubgraphState,
         judge_feedback: FamilyJudgeFeedback,
     ) -> FamilySelectedSubgraphArtifact:
-        edge_pairs = {
-            tuple(normalize_edge_pair(src_id, tgt_id))
-            for src_id, tgt_id in state.selected_edge_pairs
-        }
+        if self.preserve_edge_direction:
+            edge_pairs = {(str(src_id), str(tgt_id)) for src_id, tgt_id in state.selected_edge_pairs}
+        else:
+            edge_pairs = {
+                tuple(normalize_edge_pair(src_id, tgt_id))
+                for src_id, tgt_id in state.selected_edge_pairs
+            }
         return FamilySelectedSubgraphArtifact(
             subgraph_id=state.candidate_id,
             qa_family=self.qa_family,
