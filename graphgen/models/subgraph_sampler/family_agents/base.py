@@ -290,6 +290,9 @@ class BaseFamilyAgent(ABC):
                 selected_subgraph.get("image_grounding_summary", "")
             ),
             evidence_summary=str(selected_subgraph.get("evidence_summary", "")),
+            current_chain_path=[
+                str(node_id) for node_id in selected_subgraph.get("current_chain_path", [])
+            ],
             intent=str(selected_subgraph.get("technical_focus", "")),
         )
 
