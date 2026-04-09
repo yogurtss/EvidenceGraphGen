@@ -1,7 +1,8 @@
 from graphgen.models.subgraph_sampler.artifacts import JudgeScorecard
 
 from .base import BaseFamilyAgent
-from .types import FamilyJudgeFeedback, FamilySubgraphState
+from .artifacts import FamilySelectedSubgraphArtifact
+from .types import CandidatePoolItem, FamilyJudgeFeedback, FamilySubgraphState
 
 
 class MultiHopFamilyAgent(BaseFamilyAgent):
@@ -39,6 +40,7 @@ class MultiHopFamilyAgent(BaseFamilyAgent):
                 technical_focus="reasoning_chain",
                 image_grounding_summary="The image anchors the first reasoning step.",
                 evidence_summary="The chain advances one frontier at a time.",
+                current_chain_path=[seed_node_id],
             )
             self._apply_candidate(state, first_hop)
             frontier = first_hop
@@ -145,6 +147,7 @@ class MultiHopFamilyAgent(BaseFamilyAgent):
             technical_focus=state.technical_focus,
             image_grounding_summary=state.image_grounding_summary,
             evidence_summary=state.evidence_summary,
+            current_chain_path=list(state.current_chain_path),
         )
         self._apply_candidate(revised, next_candidate)
         revised.candidate_pool = []
@@ -157,6 +160,27 @@ class MultiHopFamilyAgent(BaseFamilyAgent):
         return revised
 
     def _judge_state(self, state: FamilySubgraphState) -> FamilyJudgeFeedback:
+        chain_path = self._derive_chain_path(state)
+        if not self._is_valid_chain(chain_path):
+            scorecard = JudgeScorecard(
+                image_indispensability=0.52,
+                answer_stability=0.42,
+                evidence_closure=0.38,
+                technical_relevance=0.58,
+                reasoning_depth=0.36,
+                hallucination_risk=0.34,
+                theme_coherence=0.45,
+                overall_score=0.4,
+                passes=False,
+            )
+            return FamilyJudgeFeedback(
+                qa_family=self.qa_family,
+                scorecard=scorecard,
+                sufficient=False,
+                decision="reject",
+                rejection_reason="multi_hop_chain_validation_failed",
+                suggested_action="advance_frontier",
+            )
         llm_feedback = self._llm_judge_state(state)
         if llm_feedback is not None:
             return llm_feedback
@@ -182,4 +206,79 @@ class MultiHopFamilyAgent(BaseFamilyAgent):
             decision="accept" if sufficient else "reject",
             rejection_reason="" if sufficient else "multi_hop_requires_deep_chain",
             suggested_action="" if sufficient else "advance_frontier",
+        )
+
+    def _apply_candidate(
+        self,
+        state: FamilySubgraphState,
+        candidate: CandidatePoolItem,
+    ) -> None:
+        super()._apply_candidate(state, candidate)
+        state.current_chain_path = list(candidate.frontier_path)
+
+    def _derive_chain_path(self, state: FamilySubgraphState) -> list[str]:
+        if state.current_chain_path:
+            return [str(node_id) for node_id in state.current_chain_path]
+        if state.selected_node_ids:
+            return [str(node_id) for node_id in state.selected_node_ids]
+        return []
+
+    def _chain_edge_pairs(self, chain_path: list[str]) -> list[tuple[str, str]]:
+        if len(chain_path) < 2:
+            return []
+        return [(chain_path[index], chain_path[index + 1]) for index in range(len(chain_path) - 1)]
+
+    def _is_valid_chain(self, chain_path: list[str]) -> bool:
+        if len(chain_path) < 3:
+            return False
+        if len(set(chain_path)) != len(chain_path):
+            return False
+        edge_pairs = self._chain_edge_pairs(chain_path)
+        if len(edge_pairs) != len(chain_path) - 1:
+            return False
+        indegree = {node_id: 0 for node_id in chain_path}
+        outdegree = {node_id: 0 for node_id in chain_path}
+        for src_id, tgt_id in edge_pairs:
+            outdegree[src_id] += 1
+            indegree[tgt_id] += 1
+            edge_data = self.graph.get_edge(src_id, tgt_id) or self.graph.get_edge(tgt_id, src_id)
+            if not edge_data:
+                return False
+        for index, node_id in enumerate(chain_path):
+            if index == 0:
+                if indegree[node_id] != 0 or outdegree[node_id] != 1:
+                    return False
+                continue
+            if index == len(chain_path) - 1:
+                if indegree[node_id] != 1 or outdegree[node_id] != 0:
+                    return False
+                continue
+            if indegree[node_id] != 1 or outdegree[node_id] != 1:
+                return False
+        return True
+
+    def _materialize_selected_subgraph(
+        self,
+        state: FamilySubgraphState,
+        judge_feedback: FamilyJudgeFeedback,
+    ) -> FamilySelectedSubgraphArtifact:
+        chain_path = self._derive_chain_path(state)
+        chain_pairs = self._chain_edge_pairs(chain_path)
+        edge_pairs = set(chain_pairs) if chain_pairs else {
+            (src_id, tgt_id) for src_id, tgt_id in state.selected_edge_pairs
+        }
+        return FamilySelectedSubgraphArtifact(
+            subgraph_id=state.candidate_id,
+            qa_family=self.qa_family,
+            technical_focus=state.technical_focus or self.qa_family,
+            nodes=self._node_payloads(set(chain_path or state.selected_node_ids)),
+            edges=self._edge_payloads(edge_pairs),
+            image_grounding_summary=state.image_grounding_summary,
+            evidence_summary=state.evidence_summary,
+            judge_scores=judge_feedback.scorecard,
+            approved_question_types=[self.qa_family],
+            candidate_pool_snapshot=[item.to_dict() for item in state.candidate_pool],
+            frontier_node_id=state.frontier_node_id,
+            theme_signature=state.theme_signature,
+            revision_id=state.revision_id,
         )

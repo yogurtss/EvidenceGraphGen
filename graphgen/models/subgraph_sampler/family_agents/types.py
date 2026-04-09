@@ -37,6 +37,7 @@ class FamilySubgraphState:
     technical_focus: str = ""
     image_grounding_summary: str = ""
     evidence_summary: str = ""
+    current_chain_path: list[str] = field(default_factory=list)
     status: str = "editing"
 
     def to_dict(self) -> dict[str, Any]:
