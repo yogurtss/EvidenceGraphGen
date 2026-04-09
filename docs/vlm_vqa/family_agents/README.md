@@ -113,3 +113,85 @@ family subgraph
 - `max_judge_errors`
 - `min_multi_hop_outside_core_edges`
 - `strict_abstain_on_empty_bootstrap`
+
+## 6. Visual-Core LLM Agent Summary
+
+这个 agent 的目标不是用规则硬编码选点，而是把 family subgraph 的构造拆成一个可控状态机：
+
+- LLM 负责提出 family-specific `intent`
+- LLM 负责从合法 candidate pool 里选择下一步
+- 另一个 LLM 负责判断 `continue / accept / rollback_last_step / reject`
+- 代码负责协议校验、候选合法性、方向一致性、深度预算、family postcheck 和最终终止
+
+整体流程是：
+
+```text
+seed image
+-> bootstrap visual core
+-> build second-hop candidate pool
+-> selector chooses one legal candidate
+-> code updates state / direction / frontier
+-> judge decides continue / accept / rollback / reject
+-> terminal handler records the final reason
+```
+
+其中 `bootstrap visual core` 的输入是：
+
+- `seed image node`
+- first-hop image/caption entities
+- second-hop preview candidates
+- runtime schema summary
+
+bootstrap 的输出是：
+
+- `intent`
+- `technical_focus`
+- keep/drop first-hop decisions
+- preferred entity / relation types
+- forbidden patterns
+- target reasoning depth
+
+bootstrap 完成后：
+
+- `seed + kept first-hop` 构成初始 subgraph
+- second-hop 才进入初始 candidate pool
+- 被 drop 的 first-hop 及其 second-hop 后代不会进入后续搜索
+
+三类 family 的语义是：
+
+- `atomic`
+  - 只允许停留在 visual core
+  - 目标是最小、稳定、图像不可替代的一跳事实
+- `aggregated`
+  - 允许同主题宽扩
+  - 深化时优先保留同方向、同主题的 sibling，而不是退化成纯 DFS
+- `multi_hop`
+  - 只维护一条 active chain
+  - 从离开 visual core 的第一条边开始冻结方向
+  - 最终必须通过代码侧链式 postcheck，要求 visual core 外至少两条连续边
+
+这条 agent 的关键鲁棒性设计是：
+
+- LLM 输出先过协议校验，再进入状态机
+- 坏输出区分 `parse_error / schema_error / semantic_error`
+- bootstrap 空输出或 keep 为空时，默认直接 `abstain`
+- selector 连续错选或重复选择非法 candidate 时，终止为 `invalid_selection_repeated`
+- judge 坏输出会落成 `judge_protocol_error`
+- 所有 terminal path 都统一写入 `family_termination_trace`
+
+最终输出里，除了 `selected_subgraphs`，还会保留足够多的调试信息：
+
+- `family_sessions`
+- `family_bootstrap_trace`
+- `family_selection_trace`
+- `family_termination_trace`
+- `intent_bundle`
+- `candidate_bundle`
+
+因此这个 agent 的角色边界可以概括为：
+
+- LLM 是策略层
+- code validator 是约束层
+- terminal handler 是收敛层
+
+也就是说，LLM 不再是“直接决定最终 subgraph 的唯一裁判”，而是被状态机和 family-specific postcheck 包住的决策组件。
