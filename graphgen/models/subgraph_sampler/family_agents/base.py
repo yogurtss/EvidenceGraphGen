@@ -13,6 +13,10 @@ from graphgen.models.subgraph_sampler.artifacts import (
 )
 
 from .artifacts import FamilySelectedSubgraphArtifact
+from .prompts import (
+    build_family_subgraph_edit_prompt,
+    build_family_subgraph_judge_prompt,
+)
 from .types import (
     CandidatePoolItem,
     FamilyJudgeFeedback,
@@ -58,6 +62,10 @@ class BaseFamilyAgent(ABC):
         accepted = 0
 
         for state in states[: self.max_selected_subgraphs]:
+            state = self._llm_edit_state(
+                state=state,
+                revision_reason="sample_initial_round",
+            )
             family_edit_trace.append(
                 {
                     "qa_family": self.qa_family,
@@ -143,6 +151,86 @@ class BaseFamilyAgent(ABC):
         if not judge_feedback.sufficient:
             return None
         return self._materialize_selected_subgraph(revised, judge_feedback).to_dict()
+
+    def _llm_edit_state(
+        self,
+        *,
+        state: FamilySubgraphState,
+        revision_reason: str,
+    ) -> FamilySubgraphState:
+        if not self.llm_client or not state.candidate_pool:
+            return state
+        prompt = build_family_subgraph_edit_prompt(
+            qa_family=self.qa_family,
+            state_payload=state.to_dict(),
+            candidate_pool_payload=[item.to_dict() for item in state.candidate_pool],
+            revision_reason=revision_reason,
+        )
+        payload = self._call_llm_json(prompt)
+        if not payload:
+            return state
+        decision = str(payload.get("decision", "")).strip().lower()
+        if decision != "select_candidate":
+            return state
+        candidate_node_id = str(payload.get("candidate_node_id", "")).strip()
+        if not candidate_node_id:
+            return state
+        candidate = next(
+            (item for item in state.candidate_pool if item.candidate_node_id == candidate_node_id),
+            None,
+        )
+        if candidate is None:
+            return state
+        self._apply_candidate(state, candidate)
+        return state
+
+    def _llm_judge_state(self, state: FamilySubgraphState) -> FamilyJudgeFeedback | None:
+        if not self.llm_client:
+            return None
+        prompt = build_family_subgraph_judge_prompt(
+            qa_family=self.qa_family,
+            state_payload=state.to_dict(),
+        )
+        payload = self._call_llm_json(prompt)
+        if not payload:
+            return None
+        scores = payload.get("scores") if isinstance(payload.get("scores"), dict) else {}
+        required = {
+            "image_indispensability",
+            "answer_stability",
+            "evidence_closure",
+            "technical_relevance",
+            "reasoning_depth",
+            "hallucination_risk",
+            "theme_coherence",
+            "overall_score",
+        }
+        if not required.issubset(set(scores.keys())):
+            return None
+        try:
+            scorecard = JudgeScorecard(
+                image_indispensability=float(scores["image_indispensability"]),
+                answer_stability=float(scores["answer_stability"]),
+                evidence_closure=float(scores["evidence_closure"]),
+                technical_relevance=float(scores["technical_relevance"]),
+                reasoning_depth=float(scores["reasoning_depth"]),
+                hallucination_risk=float(scores["hallucination_risk"]),
+                theme_coherence=float(scores["theme_coherence"]),
+                overall_score=float(scores["overall_score"]),
+                passes=bool(payload.get("sufficient", False)),
+            )
+        except (TypeError, ValueError):
+            return None
+        decision = str(payload.get("decision", "")).strip().lower()
+        return FamilyJudgeFeedback(
+            qa_family=self.qa_family,
+            scorecard=scorecard,
+            sufficient=bool(payload.get("sufficient", False))
+            and scorecard.overall_score >= self.judge_pass_threshold,
+            decision="accept" if decision == "accept" else "reject",
+            rejection_reason=str(payload.get("rejection_reason", "")).strip(),
+            suggested_action=str(payload.get("suggested_action", "")).strip(),
+        )
 
     @abstractmethod
     def _build_candidate_states(
@@ -451,3 +539,17 @@ class BaseFamilyAgent(ABC):
 
     def _safe_json_dumps(self, payload: dict[str, Any]) -> str:
         return json.dumps(payload, ensure_ascii=False)
+
+    def _call_llm_json(self, prompt: str) -> dict[str, Any]:
+        if not self.llm_client:
+            return {}
+        raw = self.llm_client.generate_answer(prompt)
+        if hasattr(raw, "__await__"):
+            raw = __import__("asyncio").run(raw)
+        if not isinstance(raw, str):
+            return {}
+        try:
+            payload = json.loads(raw)
+            return payload if isinstance(payload, dict) else {}
+        except json.JSONDecodeError:
+            return {}
