@@ -3,6 +3,7 @@ from .graph_editing_vlm_sampler import GraphEditingVLMSubgraphSampler
 from .agentic_vlm_sampler import VLMSubgraphSampler
 from .family_agents import FamilySubgraphOrchestrator
 from .schema_guided_vlm_sampler import SchemaGuidedVLMSubgraphSampler
+from .visual_core_family_llm_sampler import VisualCoreFamilyLLMSubgraphSampler
 
 __all__ = [
     "VLMSubgraphSampler",
@@ -10,4 +11,5 @@ __all__ = [
     "FamilyAwareVLMSubgraphSampler",
     "FamilySubgraphOrchestrator",
     "SchemaGuidedVLMSubgraphSampler",
+    "VisualCoreFamilyLLMSubgraphSampler",
 ]

@@ -12,6 +12,7 @@ from .read import read
 from .rephrase import RephraseService
 from .sample_subgraph import SampleSubgraphService
 from .sample_subgraph_family import SampleSubgraphFamilyService
+from .sample_subgraph_family_llm import SampleSubgraphFamilyLLMService
 from .schema_guided_subgraph import SchemaGuidedSubgraphService
 from .sample_subgraph_v2 import SampleSubgraphV2Service
 from .sample_subgraph_v3 import SampleSubgraphV3Service
@@ -43,6 +44,7 @@ operators = {
     "filter": FilterService,
     "sample_subgraph": SampleSubgraphService,
     "sample_subgraph_family": SampleSubgraphFamilyService,
+    "sample_subgraph_family_llm": SampleSubgraphFamilyLLMService,
     "schema_guided_subgraph": SchemaGuidedSubgraphService,
     "sample_subgraph_v2": SampleSubgraphV2Service,
     "sample_subgraph_v3": SampleSubgraphV3Service,

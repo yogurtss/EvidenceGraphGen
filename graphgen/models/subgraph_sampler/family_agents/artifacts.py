@@ -18,11 +18,12 @@ class FamilySelectedSubgraphArtifact:
     candidate_pool_snapshot: list[dict[str, Any]]
     frontier_node_id: str
     theme_signature: str
+    current_chain_path: list[str] | None = None
     revision_id: int = 0
     degraded: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "subgraph_id": self.subgraph_id,
             "qa_family": self.qa_family,
             "technical_focus": self.technical_focus,
@@ -38,3 +39,6 @@ class FamilySelectedSubgraphArtifact:
             "revision_id": int(self.revision_id),
             "degraded": bool(self.degraded),
         }
+        if self.current_chain_path:
+            payload["current_chain_path"] = list(self.current_chain_path)
+        return payload

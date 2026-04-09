@@ -54,6 +54,23 @@ build_grounded_tree_kg -> sample_subgraph_v3 -> generate(method=auto)
 and then let `generate(method=auto)` route them by `qa_family` instead of guessing from free-form question types.
 For the full design notes, see `docs/vlm_vqa/agentic_subgraph_v3.md`.
 
+If you want the new visual-core LLM family workflow, use `agentic_family_llm_vqa_config.yaml`.
+This variant inserts:
+
+```text
+build_grounded_tree_kg -> sample_subgraph_family_llm -> generate(method=auto)
+```
+
+`sample_subgraph_family_llm` first bootstraps a family-specific visual core from
+`seed + first-hop image/caption entities`, then lets an LLM selector expand from the
+second layer while a separate termination judge decides whether to continue, accept,
+rollback the last step, or reject.
+
+The strict-mode robustness knobs live under `sample_subgraph_family_llm.params`:
+`allow_bootstrap_fallback`, `max_protocol_retries_per_stage`,
+`max_bootstrap_errors`, `max_selector_errors`, `max_judge_errors`,
+`min_multi_hop_outside_core_edges`, and `strict_abstain_on_empty_bootstrap`.
+
 ### 3) Quality controls already enabled
 - Prompt-level constraints for DRAM/VQA reasoning (structure, timing, performance, comparison, grounding).
 - Post-generation filtering in `VQAGenerator`:

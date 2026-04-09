@@ -1,12 +1,39 @@
 # Family-Decoupled Subgraph Agents
 
-这条新链路并行于现有 `sample_subgraph_v3 -> generate(method=auto)`：
+现在有两条 family 路径：
 
 ```text
 build_grounded_tree_kg
 -> sample_subgraph_family
 -> generate_agentic_vqa
 ```
+
+```text
+build_grounded_tree_kg
+-> sample_subgraph_family_llm
+-> generate(method=auto)
+```
+
+其中新的 `sample_subgraph_family_llm` 采用 visual-core bootstrap：
+
+```text
+seed image
+-> keep/drop first-hop visual core
+-> second-hop candidate pool
+-> llm node selector
+-> termination judge
+```
+
+核心约束：
+
+- `seed + 保留下来的 first-hop` 视为 `visual core`
+- `atomic` 默认只停留在 visual core
+- `aggregated` 和 `multi_hop` 从 second-hop 开始正式扩张
+- “同向”从第一条离开 visual core 的边开始冻结
+- `generate(method=auto)` 优先读取每个 selected subgraph 的 `target_qa_count`
+- 协议错误不会再静默 fallback；默认直接进入明确的 `abstain / protocol_error` 终止路径
+- `multi_hop` 需要通过代码侧链式 postcheck，visual core 外至少两条连续边
+- `family_termination_trace` 会为每个 terminal path 记录 `decision_source / protocol_status / termination_reason`
 
 ## 1. 三个独立 agent
 
@@ -75,3 +102,14 @@ family subgraph
 ## 5. 配置
 
 - `examples/generate/generate_vqa/agentic_family_vqa_config.yaml`
+- `examples/generate/generate_vqa/agentic_family_llm_vqa_config.yaml`
+
+`sample_subgraph_family_llm` 额外的鲁棒性参数：
+
+- `allow_bootstrap_fallback`
+- `max_protocol_retries_per_stage`
+- `max_bootstrap_errors`
+- `max_selector_errors`
+- `max_judge_errors`
+- `min_multi_hop_outside_core_edges`
+- `strict_abstain_on_empty_bootstrap`

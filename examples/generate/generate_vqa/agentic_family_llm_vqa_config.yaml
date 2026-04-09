@@ -1,0 +1,89 @@
+global_params:
+  working_dir: cache
+  graph_backend: kuzu
+  kv_backend: rocksdb
+
+nodes:
+  - id: read
+    op_name: read
+    type: source
+    dependencies: []
+    params:
+      input_path:
+        - tests/fixtures/tree_vqa_demo.md
+
+  - id: structure_analyze
+    op_name: structure_analyze
+    type: map_batch
+    dependencies:
+      - read
+
+  - id: hierarchy_generate
+    op_name: hierarchy_generate
+    type: map_batch
+    dependencies:
+      - structure_analyze
+
+  - id: tree_construct
+    op_name: tree_construct
+    type: map_batch
+    dependencies:
+      - hierarchy_generate
+
+  - id: tree_chunk
+    op_name: tree_chunk
+    type: map_batch
+    dependencies:
+      - tree_construct
+    params:
+      chunk_size: 1024
+      chunk_overlap: 100
+      split_text_nodes: false
+
+  - id: build_grounded_tree_kg
+    op_name: build_grounded_tree_kg
+    type: map_batch
+    dependencies:
+      - tree_chunk
+    execution_params:
+      replicas: 1
+      batch_size: 128
+
+  - id: sample_subgraph_family_llm
+    op_name: sample_subgraph_family_llm
+    type: aggregate
+    dependencies:
+      - build_grounded_tree_kg
+    params:
+      family_qa_targets:
+        atomic: 1
+        aggregated: 2
+        multi_hop: 1
+      family_max_depths:
+        atomic: 0
+        aggregated: 2
+        multi_hop: 3
+      max_steps_per_family: 4
+      max_rollbacks_per_family: 1
+      judge_pass_threshold: 0.68
+      same_source_only: true
+      allow_bootstrap_fallback: false
+      max_protocol_retries_per_stage: 1
+      max_bootstrap_errors: 1
+      max_selector_errors: 2
+      max_judge_errors: 1
+      min_multi_hop_outside_core_edges: 2
+      strict_abstain_on_empty_bootstrap: true
+
+  - id: generate
+    op_name: generate
+    type: map_batch
+    dependencies:
+      - sample_subgraph_family_llm
+    execution_params:
+      replicas: 1
+      batch_size: 128
+    save_output: true
+    params:
+      method: auto
+      data_format: ChatML

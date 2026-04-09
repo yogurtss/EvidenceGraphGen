@@ -60,6 +60,7 @@ if TYPE_CHECKING:
         GraphEditingVLMSubgraphSampler,
         SchemaGuidedVLMSubgraphSampler,
         VLMSubgraphSampler,
+        VisualCoreFamilyLLMSubgraphSampler,
     )
     from .tokenizer import Tokenizer
 
@@ -126,6 +127,7 @@ _import_map = {
     "FamilySubgraphOrchestrator": ".subgraph_sampler",
     "SchemaGuidedVLMSubgraphSampler": ".subgraph_sampler",
     "VLMSubgraphSampler": ".subgraph_sampler",
+    "VisualCoreFamilyLLMSubgraphSampler": ".subgraph_sampler",
     # Tokenizer
     "Tokenizer": ".tokenizer",
     # Rephraser

@@ -136,7 +136,11 @@ class MultiHopFamilyAgent(BaseFamilyAgent):
             seed_scope=seed_scope,
             selected_node_ids=set(state.selected_node_ids),
             distances=distances,
-            frontier_paths={frontier_node_id: [state.seed_node_id, frontier_node_id]},
+            frontier_paths={
+                frontier_node_id: list(state.current_chain_path)
+                if state.current_chain_path
+                else [state.seed_node_id, frontier_node_id]
+            },
         )
         if not next_pool:
             return None
@@ -288,5 +292,6 @@ class MultiHopFamilyAgent(BaseFamilyAgent):
             candidate_pool_snapshot=[item.to_dict() for item in state.candidate_pool],
             frontier_node_id=state.frontier_node_id,
             theme_signature=state.theme_signature,
+            current_chain_path=chain_path,
             revision_id=state.revision_id,
         )

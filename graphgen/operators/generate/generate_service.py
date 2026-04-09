@@ -270,13 +270,21 @@ class GenerateService(BaseOperator):
             if not isinstance(selected_subgraphs, list) or not selected_subgraphs:
                 continue
 
-            max_qas = min(
-                3,
-                max(1, int(item.get("max_vqas_per_selected_subgraph", 2))),
-            )
             for selected in selected_subgraphs:
                 if not isinstance(selected, dict):
                     continue
+                max_qas = min(
+                    3,
+                    max(
+                        1,
+                        int(
+                            selected.get(
+                                "target_qa_count",
+                                item.get("max_vqas_per_selected_subgraph", 2),
+                            )
+                        ),
+                    ),
+                )
                 normalized_subgraph = self._serialize_sub_graph_payload(selected)
                 nodes = normalized_subgraph.get("nodes")
                 edges = normalized_subgraph.get("edges")
