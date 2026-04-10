@@ -12,16 +12,26 @@ import type {
   SampleDetail,
   SampleListItem,
   SourceContext,
+  VisualizationEvent,
+  VisualizationTrace,
 } from "./types";
 
 const PAGE_SIZE = 5;
 const DEFAULT_ROOT_PATH = "/home/lukashe/data/projects/EvidenceGraphGen/cache";
 const MAX_VISIBLE_SOURCE_IDS = 6;
+const TIMELINE_ANIMATION_MS = 420;
+
+type TimelineEdgeEntry = {
+  src: string;
+  tgt: string;
+  candidate?: Record<string, unknown>;
+};
 
 function GraphCanvas(props: {
   sample: SampleDetail | null;
   activeGraphItemId: string | null;
   onSelect: (selection: GraphSelection | null) => void;
+  viewSwitcher?: ReactNode;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const graphRef = useRef<cytoscape.Core | null>(null);
@@ -212,15 +222,18 @@ function GraphCanvas(props: {
           <p className="section-kicker">Graph</p>
           <h3>Sub Graph</h3>
         </div>
-        <button
-          type="button"
-          className="ghost-button"
-          onClick={() => {
-            graphRef.current?.fit(undefined, 32);
-          }}
-        >
-          Fit
-        </button>
+        <div className="graph-actions">
+          {props.viewSwitcher}
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={() => {
+              graphRef.current?.fit(undefined, 32);
+            }}
+          >
+            Fit
+          </button>
+        </div>
       </div>
       {graphIssues.invalidEdges.length ? (
           <div className="graph-warning">
@@ -252,6 +265,357 @@ function GraphCanvas(props: {
         </div>
       )}
       {graphError ? <div className="empty-panel">{`Graph render issue: ${graphError}`}</div> : null}
+    </article>
+  );
+}
+
+function TimelineGraphCanvas(props: {
+  sample: SampleDetail;
+  trace: VisualizationTrace;
+  activeGraphItemId: string | null;
+  onSelect: (selection: GraphSelection | null) => void;
+  viewSwitcher?: ReactNode;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const graphRef = useRef<cytoscape.Core | null>(null);
+  const [familyFilter, setFamilyFilter] = useState("all");
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [graphError, setGraphError] = useState<string | null>(null);
+
+  const events = props.trace.events || [];
+  const families = useMemo(
+    () => Array.from(new Set(events.map((event) => event.qa_family).filter(Boolean))),
+    [events],
+  );
+  const filteredEvents = useMemo(
+    () =>
+      familyFilter === "all"
+        ? events
+        : events.filter((event) => event.qa_family === familyFilter),
+    [events, familyFilter],
+  );
+  const activeEvent = filteredEvents[Math.min(currentIndex, filteredEvents.length - 1)] || null;
+
+  useEffect(() => {
+    setCurrentIndex(0);
+    setPlaying(false);
+  }, [props.sample.sample_id, familyFilter, events.length]);
+
+  useEffect(() => {
+    if (!playing || filteredEvents.length <= 1) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setCurrentIndex((index) => (index + 1) % filteredEvents.length);
+    }, 1200);
+    return () => window.clearInterval(timer);
+  }, [playing, filteredEvents.length]);
+
+  useEffect(() => {
+    if (!containerRef.current) {
+      return;
+    }
+    graphRef.current?.destroy();
+    setGraphError(null);
+
+    if (!filteredEvents.length) {
+      return;
+    }
+
+    try {
+      const elements = buildTimelineGraphElements(
+        props.trace,
+        filteredEvents,
+        props.sample.image_path,
+        containerRef.current.clientWidth,
+        containerRef.current.clientHeight,
+      );
+      const cy = cytoscape({
+        container: containerRef.current,
+        elements,
+        layout: { name: "preset", fit: false },
+        style: [
+          {
+            selector: "node",
+            style: {
+              label: "data(label)",
+              "background-color": "data(color)",
+              shape: "ellipse",
+              color: "#24364c",
+              "text-wrap": "wrap",
+              "text-max-width": "66px",
+              "font-size": 8,
+              "font-weight": 600,
+              "text-valign": "center",
+              "text-halign": "center",
+              width: 50,
+              height: 50,
+              "border-width": 1.5,
+              "border-color": "#f8fbff",
+              "transition-property": "opacity, background-color, border-color, border-width",
+              "transition-duration": TIMELINE_ANIMATION_MS,
+              "transition-timing-function": "ease-in-out",
+              opacity: 1,
+            },
+          },
+          {
+            selector: "node.timeline-hidden",
+            style: {
+              opacity: 0.04,
+              "border-width": 0,
+            },
+          },
+          {
+            selector: "node.timeline-anchor",
+            style: {
+              width: 62,
+              height: 62,
+              "border-width": 3,
+              "border-color": "#f8fbff",
+            },
+          },
+          {
+            selector: "node.candidate",
+            style: {
+              opacity: 0.42,
+              "border-style": "dashed",
+              "border-color": "#9ac7ec",
+              "background-color": "#dfeef1",
+            },
+          },
+          {
+            selector: ".chosen",
+            style: {
+              opacity: 1,
+              "border-color": "#ffcf7a",
+              "border-width": 4,
+              "z-index": 999,
+            },
+          },
+          {
+            selector: "edge",
+            style: {
+              width: 1.8,
+              label: "data(label)",
+              "curve-style": "bezier",
+              "target-arrow-shape": "triangle",
+              "line-color": "#a9b9ce",
+              "target-arrow-color": "#a9b9ce",
+              color: "rgba(146, 169, 199, 0.72)",
+              "font-size": 6,
+              "font-weight": 500,
+              "text-wrap": "wrap",
+              "text-max-width": "78px",
+              "transition-property": "opacity, width, line-color, target-arrow-color",
+              "transition-duration": TIMELINE_ANIMATION_MS,
+              "transition-timing-function": "ease-in-out",
+              opacity: 0.76,
+            },
+          },
+          {
+            selector: "edge.timeline-hidden",
+            style: {
+              opacity: 0.02,
+              width: 0.4,
+            },
+          },
+          {
+            selector: "edge.candidate",
+            style: {
+              opacity: 0.36,
+              width: 1.4,
+              "line-style": "dashed",
+              "line-color": "#9ab8d8",
+              "target-arrow-color": "#9ab8d8",
+            },
+          },
+          {
+            selector: "edge.chosen",
+            style: {
+              opacity: 1,
+              width: 3,
+              "line-color": "#ffcf7a",
+              "target-arrow-color": "#ffcf7a",
+              color: "#ffe4aa",
+            },
+          },
+          {
+            selector: ":selected",
+            style: {
+              "border-color": "#5b8def",
+              "line-color": "#5b8def",
+              "target-arrow-color": "#5b8def",
+              "border-width": 4,
+              "underlay-color": "rgba(91, 141, 239, 0.18)",
+              "underlay-opacity": 1,
+              "underlay-padding": 8,
+            },
+          },
+        ],
+      });
+
+      cy.on("tap", "node", (event) => {
+        if (event.target.hasClass("timeline-hidden")) {
+          return;
+        }
+        props.onSelect(toGraphSelection("node", event.target.data(), event.target.id()));
+      });
+      cy.on("tap", "edge", (event) => {
+        if (event.target.hasClass("timeline-hidden")) {
+          return;
+        }
+        props.onSelect(toGraphSelection("edge", event.target.data(), event.target.id()));
+      });
+
+      const anchorNode = cy.nodes(".timeline-anchor");
+      anchorNode.lock();
+      centerTimelineAnchor(cy);
+      graphRef.current = cy;
+    } catch (error) {
+      setGraphError(error instanceof Error ? error.message : "Unable to render this timeline.");
+    }
+
+    return () => {
+      graphRef.current?.destroy();
+      graphRef.current = null;
+    };
+  }, [props.trace, props.sample.image_path, props.sample.sample_id, filteredEvents]);
+
+  useEffect(() => {
+    const cy = graphRef.current;
+    if (!cy || !activeEvent) {
+      return;
+    }
+    applyTimelineEventState(cy, activeEvent);
+    centerTimelineAnchor(cy);
+  }, [activeEvent]);
+
+  useEffect(() => {
+    const cy = graphRef.current;
+    if (!cy) {
+      return;
+    }
+    cy.elements().unselect();
+    if (!props.activeGraphItemId) {
+      return;
+    }
+    const target = cy.getElementById(props.activeGraphItemId);
+    if (target.nonempty()) {
+      target.select();
+    }
+  }, [props.activeGraphItemId, activeEvent?.event_id]);
+
+  const canStep = filteredEvents.length > 1;
+
+  return (
+    <article className="content-card graph-card">
+      <div className="section-top">
+        <div>
+          <p className="section-kicker">Timeline</p>
+          <h3>Build Timeline</h3>
+        </div>
+        <div className="graph-actions">
+          {props.viewSwitcher}
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={() => {
+              if (graphRef.current) {
+                centerTimelineAnchor(graphRef.current);
+              }
+            }}
+          >
+            Center
+          </button>
+        </div>
+      </div>
+
+      <div className="timeline-toolbar">
+        <div className="timeline-buttons">
+          <button
+            type="button"
+            className="ghost-button"
+            disabled={!canStep}
+            onClick={() => setCurrentIndex((index) => Math.max(0, index - 1))}
+          >
+            Prev
+          </button>
+          <button
+            type="button"
+            className="ghost-button"
+            disabled={!canStep}
+            onClick={() =>
+              setCurrentIndex((index) => Math.min(filteredEvents.length - 1, index + 1))
+            }
+          >
+            Next
+          </button>
+          <button
+            type="button"
+            className="ghost-button"
+            disabled={!canStep}
+            onClick={() => setPlaying((value) => !value)}
+          >
+            {playing ? "Pause" : "Play"}
+          </button>
+        </div>
+        <div className="timeline-family-filter">
+          {["all", ...families].map((family) => (
+            <button
+              key={family}
+              type="button"
+              className={`timeline-chip ${familyFilter === family ? "active" : ""}`}
+              onClick={() => setFamilyFilter(family)}
+            >
+              {family === "all" ? "All" : family}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {activeEvent ? (
+        <>
+          <div className="timeline-event-summary">
+            <div>
+              <span>Event</span>
+              <strong>{activeEvent.event_type}</strong>
+            </div>
+            <div>
+              <span>Family</span>
+              <strong>{activeEvent.qa_family || "-"}</strong>
+            </div>
+            <div>
+              <span>Status</span>
+              <strong>{activeEvent.status || "-"}</strong>
+            </div>
+            <div>
+              <span>Step</span>
+              <strong>{`${currentIndex + 1} / ${filteredEvents.length}`}</strong>
+            </div>
+          </div>
+          {activeEvent.event_type === "rollback" ? (
+            <div className="timeline-rollback-badge">Rollback applied</div>
+          ) : null}
+          <div className="graph-canvas timeline-canvas" ref={containerRef} />
+          {graphError ? <div className="empty-panel">{`Timeline render issue: ${graphError}`}</div> : null}
+          <div className="timeline-reason">
+            <ClampText text={activeEvent.reason || ""} emptyLabel="No event reason" />
+            {activeEvent.termination_reason ? (
+              <small>{`Termination: ${activeEvent.termination_reason}`}</small>
+            ) : null}
+          </div>
+          {activeEvent.event_type === "qa_generated" ? (
+            <div className="timeline-qa-card">
+              <span>{activeEvent.generator_key || "generator"}</span>
+              <ClampText text={activeEvent.question || ""} emptyLabel="No question" />
+              <ClampText text={activeEvent.answer || ""} emptyLabel="No answer" />
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <div className="empty-panel">No timeline events for this sample.</div>
+      )}
     </article>
   );
 }
@@ -537,6 +901,7 @@ export default function App() {
   const [activeEvidenceId, setActiveEvidenceId] = useState<string | null>(null);
   const [focusedContextId, setFocusedContextId] = useState<string | null>(null);
   const [showAllSourceIds, setShowAllSourceIds] = useState(false);
+  const [graphViewMode, setGraphViewMode] = useState<"final" | "timeline">("final");
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [search, setSearch] = useState("");
@@ -614,6 +979,7 @@ export default function App() {
         setSelectedGraphItem(null);
         setActiveEvidenceId(null);
         setFocusedContextId(null);
+        setGraphViewMode("final");
       }
     } catch (sampleError) {
       setError(sampleError instanceof Error ? sampleError.message : "Failed to load samples");
@@ -645,6 +1011,7 @@ export default function App() {
         setActiveEvidenceId(null);
         setFocusedContextId(null);
         setShowAllSourceIds(false);
+        setGraphViewMode("final");
       });
     } catch (detailError) {
       setError(detailError instanceof Error ? detailError.message : "Failed to load detail");
@@ -720,6 +1087,26 @@ export default function App() {
     showAllSourceIds || hiddenSourceCount === 0
       ? selectedSourceIds
       : selectedSourceIds.slice(0, MAX_VISIBLE_SOURCE_IDS);
+  const hasTimeline = Boolean(selectedSample?.visualization_trace?.events?.length);
+  const activeGraphViewMode = hasTimeline ? graphViewMode : "final";
+  const graphViewSwitcher = hasTimeline ? (
+    <div className="graph-view-toggle">
+      <button
+        type="button"
+        className={activeGraphViewMode === "final" ? "active" : ""}
+        onClick={() => setGraphViewMode("final")}
+      >
+        Final Graph
+      </button>
+      <button
+        type="button"
+        className={activeGraphViewMode === "timeline" ? "active" : ""}
+        onClick={() => setGraphViewMode("timeline")}
+      >
+        Build Timeline
+      </button>
+    </div>
+  ) : null;
 
   return (
     <div className="app-shell">
@@ -919,11 +1306,22 @@ export default function App() {
                 </article>
               ) : null}
 
-              <GraphCanvas
-                sample={selectedSample}
-                activeGraphItemId={selectedGraphItem?.id || null}
-                onSelect={handleGraphSelect}
-              />
+              {activeGraphViewMode === "timeline" && selectedSample.visualization_trace ? (
+                <TimelineGraphCanvas
+                  sample={selectedSample}
+                  trace={selectedSample.visualization_trace}
+                  activeGraphItemId={selectedGraphItem?.id || null}
+                  onSelect={handleGraphSelect}
+                  viewSwitcher={graphViewSwitcher}
+                />
+              ) : (
+                <GraphCanvas
+                  sample={selectedSample}
+                  activeGraphItemId={selectedGraphItem?.id || null}
+                  onSelect={handleGraphSelect}
+                  viewSwitcher={graphViewSwitcher}
+                />
+              )}
 
               <AllEvidencePanel
                 sample={selectedSample}
@@ -1105,6 +1503,417 @@ function buildGraphElements(
   });
 
   return elements;
+}
+
+function buildTimelineGraphElements(
+  trace: VisualizationTrace,
+  events: VisualizationEvent[],
+  sampleImagePath?: string | null,
+  canvasWidth = 760,
+  canvasHeight = 336,
+) {
+  const elements: cytoscape.ElementDefinition[] = [];
+  const catalogNodes = trace.graph_catalog?.nodes || {};
+  const catalogEdges = trace.graph_catalog?.edges || {};
+  const nodeIds = new Set<string>();
+  const edgeEntries = new Map<string, TimelineEdgeEntry>();
+  const candidateByNodeId = new Map<string, Record<string, unknown>>();
+  const candidateUidsByNodeId = new Map<string, Set<string>>();
+  const candidateUidsByEdgeKey = new Map<string, Set<string>>();
+
+  events.forEach((event) => {
+    (event.selected_node_ids || []).forEach((nodeId) => {
+      nodeIds.add(String(nodeId));
+    });
+    (event.selected_edge_pairs || []).forEach((pair) => {
+      const edgePair = normalizeTimelineEdgePair(pair);
+      if (!edgePair) {
+        return;
+      }
+      const [src, tgt] = edgePair;
+      nodeIds.add(src);
+      nodeIds.add(tgt);
+      edgeEntries.set(pairKey(src, tgt), { src, tgt });
+    });
+    (event.candidate_pool || []).forEach((candidate) => {
+      const candidateNodeId = coerceText(candidate.candidate_node_id);
+      if (candidateNodeId) {
+        nodeIds.add(candidateNodeId);
+        candidateByNodeId.set(candidateNodeId, candidate);
+        const candidateUid = coerceText(candidate.candidate_uid);
+        if (candidateUid) {
+          const existingUids = candidateUidsByNodeId.get(candidateNodeId) || new Set<string>();
+          existingUids.add(candidateUid);
+          candidateUidsByNodeId.set(candidateNodeId, existingUids);
+        }
+      }
+      const edgePair = normalizeTimelineEdgePair(candidate.bound_edge_pair);
+      if (!edgePair) {
+        return;
+      }
+      const [src, tgt] = edgePair;
+      nodeIds.add(src);
+      nodeIds.add(tgt);
+      const key = pairKey(src, tgt);
+      edgeEntries.set(key, { src, tgt, candidate });
+      const candidateUid = coerceText(candidate.candidate_uid);
+      if (candidateUid) {
+        const existingUids = candidateUidsByEdgeKey.get(key) || new Set<string>();
+        existingUids.add(candidateUid);
+        candidateUidsByEdgeKey.set(key, existingUids);
+      }
+    });
+  });
+
+  if (!nodeIds.size && trace.seed_node_id) {
+    nodeIds.add(trace.seed_node_id);
+  }
+
+  const anchorNodeId = getTimelineAnchorNodeId(trace, catalogNodes, nodeIds);
+  const positions = buildTimelineNodePositions(
+    Array.from(nodeIds),
+    Array.from(edgeEntries.values()),
+    anchorNodeId,
+    canvasWidth,
+    canvasHeight,
+  );
+
+  for (const nodeId of nodeIds) {
+    const metadata = normalizeTimelineNodeMetadata(
+      nodeId,
+      catalogNodes[nodeId],
+      candidateByNodeId.get(nodeId),
+    );
+    const entityType = coerceText(metadata["entity_type"]) || "unknown";
+    const fullLabel = buildNodeLabel(nodeId, metadata, sampleImagePath);
+    const classes = [
+      "timeline-hidden",
+      nodeId === anchorNodeId ? "timeline-anchor" : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    elements.push({
+      data: {
+        id: nodeId,
+        label: truncateLabel(fullLabel, entityType === "IMAGE" ? 30 : 34),
+        title: fullLabel,
+        fullLabel,
+        entityType,
+        description: coerceText(metadata["description"]),
+        evidenceSpan: coerceText(metadata["evidence_span"]),
+        sourceId: coerceText(metadata["source_id"]),
+        metadataEntries: buildMetadataEntries(metadata),
+        color: colorForEntityType(entityType),
+        candidateUids: Array.from(candidateUidsByNodeId.get(nodeId) || []),
+      },
+      position: positions.get(nodeId),
+      classes,
+    });
+  }
+
+  Array.from(edgeEntries.values()).forEach((entry, index) => {
+    const key = pairKey(entry.src, entry.tgt);
+    const edgeId = `timeline-edge-${index}`;
+    const metadata = normalizeTimelineEdgeMetadata(
+      entry.src,
+      entry.tgt,
+      catalogEdges[key] || catalogEdges[`${entry.tgt}->${entry.src}`],
+      entry.candidate,
+    );
+    const fullLabel = buildEdgeLabel(entry.src, entry.tgt, metadata, new Map());
+    elements.push({
+      data: {
+        id: edgeId,
+        source: entry.src,
+        target: entry.tgt,
+        label: truncateLabel(fullLabel, 24),
+        title: fullLabel,
+        fullLabel,
+        relationType: coerceText(
+          metadata["relation"] ||
+            metadata["relation_type"] ||
+            metadata["predicate"] ||
+            metadata["edge_type"],
+        ),
+        description: coerceText(metadata["description"]),
+        evidenceSpan: coerceText(metadata["evidence_span"]),
+        sourceId: coerceText(metadata["source_id"]),
+        connectedTo: `${entry.src} -> ${entry.tgt}`,
+        metadataEntries: buildMetadataEntries(metadata),
+        pairKey: key,
+        candidateUids: Array.from(candidateUidsByEdgeKey.get(key) || []),
+      },
+      classes: "timeline-hidden",
+    });
+  });
+
+  return elements;
+}
+
+function normalizeTimelineNodeMetadata(
+  nodeId: string,
+  catalogPayload: Record<string, unknown> | undefined,
+  candidate?: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    entity_name: nodeId,
+    ...(catalogPayload || {}),
+    entity_type:
+      catalogPayload?.["entity_type"] || candidate?.["entity_type"] || "unknown",
+    description:
+      catalogPayload?.["description"] ||
+      candidate?.["evidence_summary"] ||
+      candidate?.["reason"] ||
+      "",
+  };
+}
+
+function applyTimelineEventState(cy: cytoscape.Core, event: VisualizationEvent) {
+  const selectedNodeIds = new Set((event.selected_node_ids || []).map(String));
+  const selectedEdgeKeys = new Set<string>();
+  const candidateNodeIds = new Set<string>();
+  const candidateEdgeKeys = new Set<string>();
+  const chosenCandidate = isRecord(event.chosen_candidate) ? event.chosen_candidate : {};
+  const chosenNodeId = coerceText(chosenCandidate["candidate_node_id"]);
+  const chosenCandidateUid = coerceText(chosenCandidate["candidate_uid"]);
+  const chosenEdgePair = normalizeTimelineEdgePair(chosenCandidate["bound_edge_pair"]);
+  const chosenEdgeKey = chosenEdgePair ? pairKey(chosenEdgePair[0], chosenEdgePair[1]) : "";
+
+  (event.selected_edge_pairs || []).forEach((pair) => {
+    const edgePair = normalizeTimelineEdgePair(pair);
+    if (edgePair) {
+      selectedEdgeKeys.add(pairKey(edgePair[0], edgePair[1]));
+    }
+  });
+
+  (event.candidate_pool || []).forEach((candidate) => {
+    const candidateNodeId = coerceText(candidate.candidate_node_id);
+    if (candidateNodeId) {
+      candidateNodeIds.add(candidateNodeId);
+    }
+    const edgePair = normalizeTimelineEdgePair(candidate.bound_edge_pair);
+    if (edgePair) {
+      candidateEdgeKeys.add(pairKey(edgePair[0], edgePair[1]));
+    }
+  });
+
+  cy.batch(() => {
+    cy.elements()
+      .removeClass("timeline-hidden selected-node selected-edge candidate chosen")
+      .addClass("timeline-hidden");
+
+    cy.nodes().forEach((node) => {
+      const nodeId = node.id();
+      const candidateUids = timelineCandidateUids(node.data("candidateUids"));
+      const isSelected = selectedNodeIds.has(nodeId);
+      const isCandidate = !isSelected && candidateNodeIds.has(nodeId);
+      const isChosen =
+        nodeId === chosenNodeId ||
+        (chosenCandidateUid ? candidateUids.has(chosenCandidateUid) : false);
+
+      if (isSelected || isCandidate) {
+        node.removeClass("timeline-hidden");
+      }
+      if (isSelected) {
+        node.addClass("selected-node");
+      }
+      if (isCandidate) {
+        node.addClass("candidate");
+      }
+      if (isChosen) {
+        node.addClass("chosen");
+      }
+    });
+
+    cy.edges().forEach((edge) => {
+      const edgeKey = coerceText(edge.data("pairKey"));
+      const candidateUids = timelineCandidateUids(edge.data("candidateUids"));
+      const isSelected = selectedEdgeKeys.has(edgeKey);
+      const isCandidate = !isSelected && candidateEdgeKeys.has(edgeKey);
+      const isChosen =
+        edgeKey === chosenEdgeKey ||
+        (chosenCandidateUid ? candidateUids.has(chosenCandidateUid) : false);
+
+      if (isSelected || isCandidate) {
+        edge.removeClass("timeline-hidden");
+      }
+      if (isSelected) {
+        edge.addClass("selected-edge");
+      }
+      if (isCandidate) {
+        edge.addClass("candidate");
+      }
+      if (isChosen) {
+        edge.addClass("chosen");
+      }
+    });
+  });
+}
+
+function centerTimelineAnchor(cy: cytoscape.Core) {
+  const anchor = cy.nodes(".timeline-anchor").first();
+  if (anchor.empty()) {
+    return;
+  }
+  const renderedPosition = anchor.renderedPosition();
+  cy.panBy({
+    x: cy.width() / 2 - renderedPosition.x,
+    y: cy.height() / 2 - renderedPosition.y,
+  });
+}
+
+function getTimelineAnchorNodeId(
+  trace: VisualizationTrace,
+  catalogNodes: Record<string, Record<string, unknown>>,
+  nodeIds: Set<string>,
+) {
+  if (
+    trace.seed_node_id &&
+    nodeIds.has(trace.seed_node_id) &&
+    coerceText(catalogNodes[trace.seed_node_id]?.["entity_type"]).toUpperCase() === "IMAGE"
+  ) {
+    return trace.seed_node_id;
+  }
+
+  if (trace.seed_node_id) {
+    const virtualImageNodeId = `${trace.seed_node_id}::virtual_image`;
+    if (nodeIds.has(virtualImageNodeId)) {
+      return virtualImageNodeId;
+    }
+  }
+
+  for (const nodeId of nodeIds) {
+    if (coerceText(catalogNodes[nodeId]?.["entity_type"]).toUpperCase() === "IMAGE") {
+      return nodeId;
+    }
+  }
+
+  if (trace.seed_node_id && nodeIds.has(trace.seed_node_id)) {
+    return trace.seed_node_id;
+  }
+
+  return Array.from(nodeIds)[0] || trace.seed_node_id || "";
+}
+
+function buildTimelineNodePositions(
+  nodeIds: string[],
+  edgeEntries: TimelineEdgeEntry[],
+  anchorNodeId: string,
+  canvasWidth: number,
+  canvasHeight: number,
+) {
+  const positions = new Map<string, { x: number; y: number }>();
+  const center = { x: Math.max(canvasWidth, 360) / 2, y: Math.max(canvasHeight, 280) / 2 };
+  if (!nodeIds.length) {
+    return positions;
+  }
+
+  const orderedNodeIds = [...nodeIds].sort((left, right) => {
+    if (left === anchorNodeId) {
+      return -1;
+    }
+    if (right === anchorNodeId) {
+      return 1;
+    }
+    return left.localeCompare(right);
+  });
+  const adjacency = new Map<string, Set<string>>();
+  orderedNodeIds.forEach((nodeId) => adjacency.set(nodeId, new Set<string>()));
+  edgeEntries.forEach((entry) => {
+    adjacency.get(entry.src)?.add(entry.tgt);
+    adjacency.get(entry.tgt)?.add(entry.src);
+  });
+
+  const distances = new Map<string, number>();
+  const queue = anchorNodeId ? [anchorNodeId] : [orderedNodeIds[0]];
+  if (queue[0]) {
+    distances.set(queue[0], 0);
+  }
+
+  for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
+    const nodeId = queue[queueIndex];
+    const distance = distances.get(nodeId) || 0;
+    const neighbors = Array.from(adjacency.get(nodeId) || []).sort();
+    neighbors.forEach((neighborId) => {
+      if (distances.has(neighborId)) {
+        return;
+      }
+      distances.set(neighborId, distance + 1);
+      queue.push(neighborId);
+    });
+  }
+
+  orderedNodeIds.forEach((nodeId) => {
+    if (!distances.has(nodeId)) {
+      distances.set(nodeId, 2);
+    }
+  });
+
+  const rings = new Map<number, string[]>();
+  orderedNodeIds.forEach((nodeId) => {
+    const distance = Math.min(distances.get(nodeId) || 0, 3);
+    const ringNodes = rings.get(distance) || [];
+    ringNodes.push(nodeId);
+    rings.set(distance, ringNodes);
+  });
+
+  const ringGap = Math.max(82, Math.min(canvasWidth, canvasHeight) / 3.25);
+  rings.forEach((ringNodes, distance) => {
+    if (distance === 0) {
+      ringNodes.forEach((nodeId) => positions.set(nodeId, center));
+      return;
+    }
+
+    const radius = ringGap * distance;
+    const angleOffset = -Math.PI / 2 + distance * 0.36;
+    ringNodes.forEach((nodeId, index) => {
+      const angle = angleOffset + (2 * Math.PI * index) / Math.max(ringNodes.length, 1);
+      positions.set(nodeId, {
+        x: center.x + Math.cos(angle) * radius,
+        y: center.y + Math.sin(angle) * radius,
+      });
+    });
+  });
+
+  return positions;
+}
+
+function normalizeTimelineEdgePair(value: unknown): [string, string] | null {
+  if (!Array.isArray(value) || value.length < 2) {
+    return null;
+  }
+  return [String(value[0]), String(value[1])];
+}
+
+function pairKey(src: string, tgt: string) {
+  return `${src}->${tgt}`;
+}
+
+function timelineCandidateUids(value: unknown) {
+  if (!Array.isArray(value)) {
+    return new Set<string>();
+  }
+  return new Set(value.map(String).filter(Boolean));
+}
+
+function normalizeTimelineEdgeMetadata(
+  src: string,
+  tgt: string,
+  catalogPayload: Record<string, unknown> | undefined,
+  candidate?: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    source: src,
+    target: tgt,
+    ...(catalogPayload || {}),
+    relation_type:
+      catalogPayload?.["relation_type"] || candidate?.["relation_type"] || "candidate",
+    description:
+      catalogPayload?.["description"] ||
+      candidate?.["evidence_summary"] ||
+      candidate?.["reason"] ||
+      "",
+  };
 }
 
 function inspectGraphReferences(nodes: GraphNodeRecord[], edges: GraphEdgeRecord[]) {
@@ -1306,6 +2115,10 @@ function buildMetadataEntries(metadata: Record<string, unknown>) {
     }))
     .filter((entry) => entry.value && entry.value !== '""')
     .slice(0, 8);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function coerceText(value: unknown) {

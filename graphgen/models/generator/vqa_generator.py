@@ -16,7 +16,10 @@ class VQAGenerator(BaseGenerator):
     def build_prompt(
         batch: tuple[list[tuple[str, dict]], list[tuple[Any, Any, dict]]]
     ) -> str:
-        entities_str, relationships_str = build_grounded_context(batch)
+        entities_str, relationships_str = build_grounded_context(
+            batch,
+            include_visual_metadata=True,
+        )
         language = detect_main_language(entities_str + relationships_str)
         prompt = VQA_GENERATION_PROMPT[language].format(
             entities=entities_str, relationships=relationships_str
@@ -65,6 +68,9 @@ class VQAGenerator(BaseGenerator):
         raw_text.extend([str(edge[0]) for edge in edges])
         raw_text.extend([str(edge[1]) for edge in edges])
         raw_text.extend([edge[2].get("description", "") for edge in edges])
+        raw_text.extend(
+            build_grounded_context(batch, include_visual_metadata=True)
+        )
 
         keyword_pattern = re.compile(r"[\u4e00-\u9fff]{2,}|[a-zA-Z][a-zA-Z0-9_\-/]{2,}")
         return {token.lower() for token in keyword_pattern.findall("\n".join(raw_text))}

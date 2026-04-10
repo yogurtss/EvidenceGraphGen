@@ -25,7 +25,10 @@ class AggregatedGenerator(BaseGenerator):
         :param batch
         :return:
         """
-        entities_str, relations_str = build_grounded_context(batch)
+        entities_str, relations_str = build_grounded_context(
+            batch,
+            include_visual_metadata=True,
+        )
         language = detect_main_language(entities_str + relations_str)
 
         # TODO: configure add_context

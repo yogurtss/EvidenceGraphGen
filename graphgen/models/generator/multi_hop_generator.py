@@ -13,7 +13,10 @@ class MultiHopGenerator(BaseGenerator):
     def build_prompt(
         batch: tuple[list[tuple[str, dict]], list[tuple[Any, Any, dict]]]
     ) -> str:
-        entities_str, relationships_str = build_grounded_context(batch)
+        entities_str, relationships_str = build_grounded_context(
+            batch,
+            include_visual_metadata=True,
+        )
         language = detect_main_language(entities_str + relationships_str)
         prompt = MULTI_HOP_GENERATION_PROMPT[language].format(
             entities=entities_str, relationships=relationships_str

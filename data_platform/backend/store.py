@@ -199,6 +199,11 @@ def _parse_json_blob(value: Any) -> tuple[dict[str, Any] | None, str | None]:
     return None, "Unsupported sub_graph format"
 
 
+def _parse_optional_json_blob(value: Any) -> dict[str, Any] | None:
+    parsed, _ = _parse_json_blob(value)
+    return parsed
+
+
 def _parse_json_summary(value: Any) -> dict[str, Any] | None:
     if isinstance(value, dict):
         return value
@@ -542,6 +547,9 @@ class DataPlatformStore:
         image_path = _resolve_asset_path(raw_image_path, source_file, self.base_dir)
         sub_graph, graph_parse_error = _parse_json_blob(payload.get("sub_graph"))
         sub_graph_summary = _parse_json_summary(payload.get("sub_graph_summary"))
+        visualization_trace = _parse_optional_json_blob(
+            payload.get("visualization_trace")
+        )
         if sub_graph and not sub_graph_summary:
             sub_graph_summary = _summary_from_graph(sub_graph)
 
@@ -561,6 +569,7 @@ class DataPlatformStore:
             image_path=image_path,
             sub_graph=sub_graph,
             sub_graph_summary=sub_graph_summary,
+            visualization_trace=visualization_trace,
             evidence_items=evidence_items,
             source_contexts=source_contexts,
             raw_record=payload,

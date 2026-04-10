@@ -70,6 +70,74 @@ nodes:
             },
             ensure_ascii=False,
         ),
+        "visualization_trace": json.dumps(
+            {
+                "schema_version": "visual_core_family_timeline_v1",
+                "sampler_version": "family_llm_v2",
+                "seed_node_id": "NODE_A",
+                "seed_image_path": str(image_path),
+                "graph_catalog": {
+                    "nodes": {
+                        "NODE_A": {
+                            "node_id": "NODE_A",
+                            "entity_type": "IMAGE",
+                            "entity_name": "NODE_A",
+                        },
+                        "NODE_B": {
+                            "node_id": "NODE_B",
+                            "entity_type": "TEXT",
+                            "entity_name": "NODE_B",
+                        },
+                    },
+                    "edges": {
+                        "NODE_A->NODE_B": {
+                            "source": "NODE_A",
+                            "target": "NODE_B",
+                            "relation_type": "supports",
+                        }
+                    },
+                },
+                "events": [
+                    {
+                        "event_id": "NODE_A:atomic:1:bootstrap_state_created",
+                        "order": 1,
+                        "qa_family": "atomic",
+                        "phase": "bootstrap",
+                        "event_type": "bootstrap_state_created",
+                        "status": "ok",
+                        "selected_node_ids": ["NODE_A"],
+                        "selected_edge_pairs": [],
+                        "candidate_pool": [],
+                        "chosen_candidate": {},
+                        "judge": {},
+                        "reason": "Start from image.",
+                        "termination_reason": "",
+                    },
+                    {
+                        "event_id": "NODE_A:atomic:2:qa_generated",
+                        "order": 2,
+                        "qa_family": "atomic",
+                        "phase": "generation",
+                        "event_type": "qa_generated",
+                        "status": "generated",
+                        "selected_node_ids": ["NODE_A", "NODE_B"],
+                        "selected_edge_pairs": [["NODE_A", "NODE_B"]],
+                        "candidate_pool": [],
+                        "chosen_candidate": {},
+                        "judge": {},
+                        "reason": "",
+                        "termination_reason": "",
+                        "subgraph_id": "demo-subgraph",
+                        "generator_key": "atomic",
+                        "question": "What does the graph show?",
+                        "answer": "It shows a grounded relation.",
+                        "qa_trace_id": "trace-valid",
+                        "sub_graph_summary": {"node_count": 1, "edge_count": 1},
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
         "_trace_id": "trace-valid",
     }
     invalid_graph_record = {
@@ -134,6 +202,12 @@ def test_scan_list_and_detail_endpoints(tmp_path: Path):
     assert detail_payload["evidence_items"][0]["id"] == "node-1-NODE_A"
     assert detail_payload["evidence_items"][0]["graph_item_id"] == "NODE_A"
     assert detail_payload["evidence_items"][1]["source_id"] == "context-1"
+    assert detail_payload["visualization_trace"]["schema_version"] == (
+        "visual_core_family_timeline_v1"
+    )
+    assert detail_payload["visualization_trace"]["events"][-1]["event_type"] == (
+        "qa_generated"
+    )
 
 
 def test_invalid_graph_is_preserved_without_breaking_browse(tmp_path: Path):

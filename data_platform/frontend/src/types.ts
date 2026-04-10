@@ -51,6 +51,55 @@ export type SampleListItem = {
 export type GraphNodeRecord = [string, Record<string, unknown>];
 export type GraphEdgeRecord = [string, string, Record<string, unknown>];
 
+export type GraphCatalog = {
+  nodes?: Record<string, Record<string, unknown>>;
+  edges?: Record<string, Record<string, unknown>>;
+};
+
+export type VisualizationCandidate = {
+  candidate_uid?: string;
+  candidate_node_id?: string;
+  bind_from_node_id?: string;
+  bound_edge_pair?: string[];
+  relation_type?: string;
+  entity_type?: string;
+  evidence_summary?: string;
+  score?: number;
+  depth?: number;
+  [key: string]: unknown;
+};
+
+export type VisualizationEvent = {
+  event_id: string;
+  order: number;
+  qa_family: string;
+  phase: string;
+  event_type: string;
+  status: string;
+  selected_node_ids?: string[];
+  selected_edge_pairs?: string[][];
+  candidate_pool?: VisualizationCandidate[];
+  chosen_candidate?: VisualizationCandidate | Record<string, unknown>;
+  judge?: Record<string, unknown>;
+  reason?: string;
+  termination_reason?: string;
+  subgraph_id?: string;
+  generator_key?: string;
+  question?: string;
+  answer?: string;
+  qa_trace_id?: string;
+  sub_graph_summary?: Record<string, unknown>;
+};
+
+export type VisualizationTrace = {
+  schema_version: string;
+  sampler_version: string;
+  seed_node_id?: string;
+  seed_image_path?: string;
+  graph_catalog?: GraphCatalog;
+  events?: VisualizationEvent[];
+};
+
 export type SampleDetail = {
   sample_id: string;
   run_id: string;
@@ -71,6 +120,7 @@ export type SampleDetail = {
   } | null;
   evidence_items: EvidenceItem[];
   source_contexts: SourceContext[];
+  visualization_trace?: VisualizationTrace | null;
   raw_record: Record<string, unknown>;
   graph_parse_error?: string | null;
 };

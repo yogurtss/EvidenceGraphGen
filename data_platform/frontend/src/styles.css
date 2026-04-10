@@ -476,6 +476,109 @@ button {
   min-height: 0;
 }
 
+.graph-actions,
+.graph-view-toggle,
+.timeline-toolbar,
+.timeline-buttons,
+.timeline-family-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.graph-actions {
+  justify-content: flex-end;
+}
+
+.graph-view-toggle {
+  padding: 4px;
+  border: 1px solid rgba(87, 122, 165, 0.22);
+  border-radius: 14px;
+  background: rgba(8, 18, 31, 0.74);
+}
+
+.graph-view-toggle button,
+.timeline-chip {
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 7px 10px;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.graph-view-toggle button.active,
+.graph-view-toggle button:hover,
+.timeline-chip.active,
+.timeline-chip:hover {
+  color: var(--ink);
+  border-color: rgba(77, 163, 255, 0.28);
+  background: rgba(17, 40, 66, 0.94);
+}
+
+.timeline-toolbar {
+  justify-content: space-between;
+  margin: 12px 0;
+}
+
+.timeline-event-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.timeline-event-summary > div,
+.timeline-qa-card,
+.timeline-reason {
+  border: 1px solid rgba(87, 122, 165, 0.2);
+  border-radius: 16px;
+  background: rgba(10, 22, 38, 0.72);
+  padding: 12px;
+}
+
+.timeline-event-summary span,
+.timeline-qa-card span,
+.timeline-reason small {
+  display: block;
+  color: var(--ink-faint);
+  font-size: 12px;
+}
+
+.timeline-event-summary strong {
+  display: block;
+  margin-top: 5px;
+  color: var(--ink);
+  font-size: 13px;
+  word-break: break-word;
+}
+
+.timeline-rollback-badge {
+  display: inline-flex;
+  margin-bottom: 10px;
+  border: 1px solid rgba(255, 207, 122, 0.34);
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: rgba(65, 43, 14, 0.42);
+  color: #ffe0a3;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.timeline-canvas {
+  margin-top: 0;
+}
+
+.timeline-reason {
+  margin-top: 12px;
+}
+
+.timeline-qa-card {
+  margin-top: 12px;
+}
+
 .graph-canvas {
   width: 100%;
   height: 336px;

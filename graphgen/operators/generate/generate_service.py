@@ -1,7 +1,7 @@
 import copy
 import json
 import re
-from typing import Tuple
+from typing import Any, Tuple
 
 from graphgen.bases import BaseKVStorage, BaseLLMWrapper, BaseOperator
 from graphgen.common.init_llm import init_llm
@@ -171,6 +171,14 @@ class GenerateService(BaseOperator):
                         generator_key=generator_key,
                     )
                     res["_trace_id"] = self.get_trace_id(res)
+                    self._attach_qa_visualization_trace(
+                        res=res,
+                        item=item,
+                        subgraph_item=subgraph_item,
+                        generator_key=generator_key,
+                        qa_pair=qa_pair,
+                        sub_graph_summary=sub_graph_summary,
+                    )
                     final_results.append(res)
                     meta_updates.setdefault(input_trace_id, []).append(res["_trace_id"])
         else:
@@ -387,6 +395,117 @@ class GenerateService(BaseOperator):
         if generator_key:
             res["generator_key"] = generator_key
             res["task_type"] = generator_key
+
+    def _attach_qa_visualization_trace(
+        self,
+        *,
+        res: dict,
+        item: dict,
+        subgraph_item: dict,
+        generator_key: str,
+        qa_pair: dict,
+        sub_graph_summary: dict,
+    ) -> None:
+        trace = self._normalize_visualization_trace(
+            item.get("visualization_trace"),
+            item=item,
+        )
+        if not trace:
+            return
+        trace = copy.deepcopy(trace)
+        graph_catalog = trace.setdefault("graph_catalog", {"nodes": {}, "edges": {}})
+        self._add_subgraph_to_visualization_catalog(graph_catalog, subgraph_item)
+        events = trace.setdefault("events", [])
+        order = len(events) + 1
+        subgraph_id = str(subgraph_item.get("subgraph_id", ""))
+        qa_family = str(subgraph_item.get("qa_family", ""))
+        event = {
+            "event_id": f"{subgraph_id or item.get('seed_node_id', 'subgraph')}:{order}:qa_generated",
+            "order": order,
+            "qa_family": qa_family,
+            "phase": "generation",
+            "event_type": "qa_generated",
+            "status": "generated",
+            "selected_node_ids": [
+                node[0]
+                for node in subgraph_item.get("nodes", [])
+                if isinstance(node, (list, tuple)) and node
+            ],
+            "selected_edge_pairs": [
+                [edge[0], edge[1]]
+                for edge in subgraph_item.get("edges", [])
+                if isinstance(edge, (list, tuple)) and len(edge) >= 2
+            ],
+            "candidate_pool": [],
+            "chosen_candidate": {},
+            "judge": {},
+            "reason": "",
+            "termination_reason": "",
+            "subgraph_id": subgraph_id,
+            "generator_key": generator_key,
+            "question": qa_pair.get("question", ""),
+            "answer": qa_pair.get("answer", ""),
+            "qa_trace_id": res.get("_trace_id", ""),
+            "sub_graph_summary": sub_graph_summary,
+        }
+        events.append(event)
+        res["visualization_trace"] = json.dumps(trace, ensure_ascii=False)
+
+    @staticmethod
+    def _normalize_visualization_trace(value: Any, *, item: dict) -> dict | None:
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                value = None
+        if isinstance(value, dict):
+            trace = copy.deepcopy(value)
+        elif item.get("sampler_version") == "family_llm_v2" or any(
+            isinstance(selected, dict) and selected.get("qa_family")
+            for selected in (item.get("selected_subgraphs") or [])
+        ):
+            trace = {
+                "schema_version": "visual_core_family_timeline_v1",
+                "sampler_version": item.get("sampler_version", "family_llm_v2"),
+                "seed_node_id": item.get("seed_node_id", ""),
+                "seed_image_path": item.get("seed_image_path", ""),
+                "graph_catalog": {"nodes": {}, "edges": {}},
+                "events": [],
+            }
+        else:
+            return None
+        trace.setdefault("schema_version", "visual_core_family_timeline_v1")
+        trace.setdefault("sampler_version", item.get("sampler_version", "family_llm_v2"))
+        trace.setdefault("seed_node_id", item.get("seed_node_id", ""))
+        trace.setdefault("seed_image_path", item.get("seed_image_path", ""))
+        trace.setdefault("graph_catalog", {"nodes": {}, "edges": {}})
+        trace.setdefault("events", [])
+        return trace
+
+    @classmethod
+    def _add_subgraph_to_visualization_catalog(
+        cls,
+        graph_catalog: dict,
+        subgraph_item: dict,
+    ) -> None:
+        nodes = graph_catalog.setdefault("nodes", {})
+        edges = graph_catalog.setdefault("edges", {})
+        for node in subgraph_item.get("nodes", []):
+            if isinstance(node, (list, tuple)) and len(node) >= 2:
+                node_id = str(node[0])
+                nodes[node_id] = {
+                    "node_id": node_id,
+                    **cls._normalize_sub_graph_value(node[1] or {}),
+                }
+        for edge in subgraph_item.get("edges", []):
+            if isinstance(edge, (list, tuple)) and len(edge) >= 3:
+                src_id = str(edge[0])
+                tgt_id = str(edge[1])
+                edges[f"{src_id}->{tgt_id}"] = {
+                    "source": src_id,
+                    "target": tgt_id,
+                    **cls._normalize_sub_graph_value(edge[2] or {}),
+                }
 
     def _resolve_generator_keys(
         self,

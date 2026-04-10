@@ -65,6 +65,7 @@ class SampleRecord(BaseModel):
     image_path: str | None = None
     sub_graph: dict[str, Any] | None = None
     sub_graph_summary: dict[str, Any] | None = None
+    visualization_trace: dict[str, Any] | None = None
     evidence_items: list[EvidenceItem] = Field(default_factory=list)
     source_contexts: list[SourceContext] = Field(default_factory=list)
     raw_record: dict[str, Any]

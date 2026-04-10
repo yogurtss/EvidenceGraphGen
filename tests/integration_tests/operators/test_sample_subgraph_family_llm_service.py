@@ -57,7 +57,7 @@ class _DummyVisualCoreLLM:
     tokenizer = None
 
     def __init__(self):
-        self.selector_calls = {"aggregated": 0, "multi_hop": 0}
+        self.selector_calls = {"atomic": 0, "aggregated": 0, "multi_hop": 0}
 
     async def generate_answer(self, prompt: str, history=None, **extra):
         if "ROLE: VisualCoreBootstrap" in prompt:
@@ -154,7 +154,21 @@ class _DummyVisualCoreLLM:
                     "confidence": 0.92,
                 }
             )
-        return json.dumps({"decision": "stop_selection", "reason": "atomic_stops_after_bootstrap"})
+        if family == "atomic":
+            candidate_uid = next(
+                item["candidate_uid"]
+                for item in candidate_pool
+                if item["candidate_node_id"] == "row_activation"
+            )
+            return json.dumps(
+                {
+                    "decision": "select_candidate",
+                    "candidate_uid": candidate_uid,
+                    "reason": "Select one second-hop timing fact for atomic QA.",
+                    "confidence": 0.9,
+                }
+            )
+        return json.dumps({"decision": "stop_selection", "reason": "unknown_family"})
 
     def _termination_response(self, prompt: str) -> str:
         family = self._extract_family(prompt)
@@ -492,7 +506,7 @@ def test_sample_subgraph_family_llm_bootstraps_visual_core_and_updates_candidate
     rows, _ = service.process([{"_trace_id": "build-grounded-tree-kg-1"}])
     assert len(rows) == 1
     result = rows[0]
-    assert result["sampler_version"] == "family_llm_v1"
+    assert result["sampler_version"] == "family_llm_v2"
     assert {item["qa_family"] for item in result["selected_subgraphs"]} == {
         "atomic",
         "aggregated",
@@ -523,15 +537,41 @@ def test_sample_subgraph_family_llm_bootstraps_visual_core_and_updates_candidate
     }
 
     atomic = selected_by_family["atomic"]
-    assert {node[0] for node in atomic["nodes"]} == {"image_seed", "latency_metric"}
+    assert {node[0] for node in atomic["nodes"]} == {
+        "image_seed::virtual_image",
+        "row_activation",
+    }
+    assert atomic["visual_core_node_ids"] == ["image_seed::virtual_image"]
+    assert atomic["analysis_first_hop_node_ids"] == ["latency_metric"]
+    assert atomic["analysis_only_node_ids"] == [
+        "image_seed",
+        "latency_metric",
+        "voltage_metric",
+        "decoder_logic",
+    ]
+    assert "latency_metric" not in {node[0] for node in atomic["nodes"]}
+    atomic_virtual_edges = [
+        edge for edge in atomic["edges"] if edge[0] == "image_seed::virtual_image"
+    ]
+    assert len(atomic_virtual_edges) == 1
+    assert atomic_virtual_edges[0][1] == "row_activation"
+    assert atomic_virtual_edges[0][2]["synthetic"] is True
+    assert atomic_virtual_edges[0][2]["analysis_anchor_node_id"] == "latency_metric"
+    assert atomic_virtual_edges[0][2]["virtualized_from_path"] == [
+        "image_seed::virtual_image",
+        "latency_metric",
+        "row_activation",
+    ]
     assert atomic["target_qa_count"] == 1
 
     aggregated = selected_by_family["aggregated"]
     aggregated_nodes = {node[0] for node in aggregated["nodes"]}
-    assert {"image_seed", "latency_metric", "voltage_metric", "row_activation", "random_access_perf"} <= aggregated_nodes
-    assert aggregated["visual_core_node_ids"] == ["image_seed", "latency_metric", "voltage_metric"]
+    assert {"image_seed::virtual_image", "row_activation", "random_access_perf"} <= aggregated_nodes
+    assert not {"image_seed", "latency_metric", "voltage_metric"} & aggregated_nodes
+    assert aggregated["visual_core_node_ids"] == ["image_seed::virtual_image"]
+    assert aggregated["analysis_first_hop_node_ids"] == ["latency_metric", "voltage_metric"]
     assert aggregated["direction_mode"] == "outward"
-    assert aggregated["direction_anchor_edge"] == ["latency_metric", "row_activation"]
+    assert aggregated["direction_anchor_edge"] == ["image_seed::virtual_image", "row_activation"]
     assert {
         candidate["candidate_node_id"] for candidate in aggregated["candidate_pool_snapshot"]
     } == {"timing_window"}
@@ -551,13 +591,14 @@ def test_sample_subgraph_family_llm_bootstraps_visual_core_and_updates_candidate
     multi_hop = selected_by_family["multi_hop"]
     multi_hop_nodes = {node[0] for node in multi_hop["nodes"]}
     assert "bank_conflict" not in multi_hop_nodes
-    assert {"image_seed", "latency_metric", "row_activation", "random_access_perf"} <= multi_hop_nodes
+    assert {"image_seed::virtual_image", "row_activation", "random_access_perf"} <= multi_hop_nodes
+    assert "latency_metric" not in multi_hop_nodes
     multi_hop_rollback = next(
         item
         for item in result["family_selection_trace"]
         if item["qa_family"] == "multi_hop" and item["decision"] == "rollback_last_step"
     )
-    assert multi_hop_rollback["candidate_uid"].endswith("bank_conflict:2:latency_metric")
+    assert multi_hop_rollback["candidate_uid"].endswith("bank_conflict:1:latency_metric")
     multi_hop_chain_step = next(
         item
         for item in result["family_selection_trace"]
@@ -567,6 +608,55 @@ def test_sample_subgraph_family_llm_bootstraps_visual_core_and_updates_candidate
     assert [candidate["candidate_node_id"] for candidate in multi_hop_chain_step["candidate_pool_after_step"]] == [
         "random_access_perf"
     ]
+
+    visualization_trace = result["visualization_trace"]
+    assert visualization_trace["schema_version"] == "visual_core_family_timeline_v1"
+    assert visualization_trace["sampler_version"] == "family_llm_v2"
+    assert [event["order"] for event in visualization_trace["events"]] == list(
+        range(1, len(visualization_trace["events"]) + 1)
+    )
+    event_types = [event["event_type"] for event in visualization_trace["events"]]
+    assert "bootstrap_candidates_collected" in event_types
+    assert "candidate_selected" in event_types
+    assert "candidate_pool_updated" in event_types
+    assert "judge_decision" in event_types
+    assert "rollback" in event_types
+    assert "subgraph_materialized" in event_types
+
+    graph_catalog = visualization_trace["graph_catalog"]
+    assert "image_seed::virtual_image" in graph_catalog["nodes"]
+    assert "row_activation" in graph_catalog["nodes"]
+    virtual_edge = graph_catalog["edges"]["image_seed::virtual_image->row_activation"]
+    assert virtual_edge["synthetic"] is True
+    assert virtual_edge["analysis_anchor_node_id"] == "latency_metric"
+    assert virtual_edge["virtualized_from_path"] == [
+        "image_seed::virtual_image",
+        "latency_metric",
+        "row_activation",
+    ]
+
+    aggregated_pool_event = next(
+        event
+        for event in visualization_trace["events"]
+        if event["qa_family"] == "aggregated"
+        and event["event_type"] == "candidate_pool_updated"
+        and event["chosen_candidate"].get("candidate_node_id") == "random_access_perf"
+    )
+    assert {
+        candidate["candidate_node_id"]
+        for candidate in aggregated_pool_event["candidate_pool"]
+    } == {"timing_window"}
+
+    rollback_event = next(
+        event
+        for event in visualization_trace["events"]
+        if event["qa_family"] == "multi_hop"
+        and event["event_type"] == "rollback"
+    )
+    assert rollback_event["selected_node_ids"] == ["image_seed::virtual_image"]
+    assert rollback_event["chosen_candidate"]["candidate_uid"].endswith(
+        "bank_conflict:1:latency_metric"
+    )
 
 
 def test_generate_service_prefers_target_qa_count_for_family_llm_subgraphs(
@@ -656,6 +746,16 @@ def test_generate_service_prefers_target_qa_count_for_family_llm_subgraphs(
     qa_family_counts = {}
     for row in rows:
         qa_family_counts[row["qa_family"]] = qa_family_counts.get(row["qa_family"], 0) + 1
+        visualization_trace = json.loads(row["visualization_trace"])
+        qa_event = visualization_trace["events"][-1]
+        assert qa_event["event_type"] == "qa_generated"
+        assert qa_event["qa_trace_id"] == row["_trace_id"]
+        assert qa_event["qa_family"] == row["qa_family"]
+        assert qa_event["generator_key"] == row["generator_key"]
+        assert qa_event["question"] in row["messages"][0]["content"]
+        assert qa_event["answer"] in row["messages"][1]["content"]
+        assert visualization_trace["graph_catalog"]["nodes"]
+        assert visualization_trace["graph_catalog"]["edges"]
     assert qa_family_counts == {"atomic": 1, "aggregated": 2, "multi_hop": 1}
 
 

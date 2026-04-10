@@ -61,10 +61,10 @@ This variant inserts:
 build_grounded_tree_kg -> sample_subgraph_family_llm -> generate(method=auto)
 ```
 
-`sample_subgraph_family_llm` first bootstraps a family-specific visual core from
-`seed + first-hop image/caption entities`, then lets an LLM selector expand from the
-second layer while a separate termination judge decides whether to continue, accept,
-rollback the last step, or reject.
+`sample_subgraph_family_llm` first bootstraps family-specific first-hop analysis
+anchors, then builds final QA subgraphs from a virtual image node connected to
+second-layer evidence while a separate termination judge decides whether to
+continue, accept, rollback the last step, or reject.
 
 The strict-mode robustness knobs live under `sample_subgraph_family_llm.params`:
 `allow_bootstrap_fallback`, `max_protocol_retries_per_stage`,
