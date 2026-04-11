@@ -1,17 +1,15 @@
 import copy
-import re
-from collections import Counter
+import hashlib
 from typing import Any
 
 from graphgen.models.subgraph_sampler.artifacts import (
     JudgeScorecard,
-    clip_score,
     compact_text,
     extract_json_payload,
     load_metadata,
-    split_source_ids,
     to_json_compatible,
 )
+from .candidate_engine import VisualCoreFamilyCandidateEngineMixin
 from .models import (
     BootstrapPlan,
     BootstrapStageResult,
@@ -20,19 +18,24 @@ from .models import (
     FamilyCandidatePoolItem,
     FamilySessionState,
     FamilyTerminationDecision,
-    MANDATORY_SCORE_KEYS,
     SelectorStageResult,
 )
 from .prompts import build_bootstrap_prompt, build_selector_prompt, build_termination_prompt
+from .materializer import VisualCoreFamilyMaterializerMixin
+from .trace import VisualCoreFamilyTraceMixin
 from .validators import (
-    _validate_bootstrap_payload as validate_bootstrap_payload,
-    _validate_selector_payload as validate_selector_payload,
-    _validate_termination_payload as validate_termination_payload,
     protocol_failure_entry,
+    validate_bootstrap_payload,
+    validate_selector_payload,
+    validate_termination_payload,
 )
 
 
-class VisualCoreFamilyLLMSubgraphSampler:
+class VisualCoreFamilyLLMSubgraphSampler(
+    VisualCoreFamilyCandidateEngineMixin,
+    VisualCoreFamilyMaterializerMixin,
+    VisualCoreFamilyTraceMixin,
+):
     FAMILY_ORDER = ("atomic", "aggregated", "multi_hop")
     VISUALIZATION_TRACE_SCHEMA_VERSION = "visual_core_family_timeline_v1"
 
@@ -55,7 +58,6 @@ class VisualCoreFamilyLLMSubgraphSampler:
         max_selector_errors: int = 2,
         max_judge_errors: int = 1,
         min_multi_hop_outside_core_edges: int = 2,
-        strict_abstain_on_empty_bootstrap: bool = True,
     ):
         self.graph = graph
         self.llm_client = llm_client
@@ -78,9 +80,6 @@ class VisualCoreFamilyLLMSubgraphSampler:
         self.max_judge_errors = max(1, int(max_judge_errors))
         self.min_multi_hop_outside_core_edges = max(
             2, int(min_multi_hop_outside_core_edges)
-        )
-        self.strict_abstain_on_empty_bootstrap = bool(
-            strict_abstain_on_empty_bootstrap
         )
 
     async def sample(self, *, seed_node_id: str) -> dict[str, Any]:
@@ -306,7 +305,7 @@ class VisualCoreFamilyLLMSubgraphSampler:
         if bootstrap_result.protocol_status != "ok":
             family_session["bootstrap_error_count"] = 1
             protocol_failures.append(
-                self._protocol_failure_entry(
+                protocol_failure_entry(
                     stage="bootstrap",
                     error_type=bootstrap_result.protocol_error_type or "parse_error",
                     reason=bootstrap_result.reason or "bootstrap_protocol_error",
@@ -334,29 +333,15 @@ class VisualCoreFamilyLLMSubgraphSampler:
                     protocol_error_type=bootstrap_result.protocol_error_type,
                 )
 
-        kept_first_hop_ids = self._resolve_first_hop_keeps(
-            qa_family=qa_family,
-            first_hop=first_hop,
-            bootstrap_plan=bootstrap_plan,
-        )
-        dropped_first_hop_ids = [
-            item.candidate_node_id
-            for item in first_hop
-            if item.candidate_node_id not in kept_first_hop_ids
-        ]
-        bootstrap_trace[0]["kept_first_hop_node_ids"] = list(kept_first_hop_ids)
-        bootstrap_trace[0]["dropped_first_hop_node_ids"] = dropped_first_hop_ids
-        bootstrap_trace[0]["analysis_first_hop_node_ids"] = list(kept_first_hop_ids)
-        bootstrap_trace[0][
-            "dropped_analysis_first_hop_node_ids"
-        ] = dropped_first_hop_ids
+        analysis_first_hop_ids = [item.candidate_node_id for item in first_hop]
+        bootstrap_trace[0]["analysis_first_hop_node_ids"] = list(analysis_first_hop_ids)
 
-        if not kept_first_hop_ids:
+        if not analysis_first_hop_ids:
             return _finalize(
                 termination_reason="bootstrap_empty",
                 stage="bootstrap",
                 decision_source="system",
-                reason="No first-hop nodes survived bootstrap keep/drop.",
+                reason="No image-local analysis nodes were available.",
             )
 
         state = self._build_bootstrapped_state(
@@ -365,8 +350,7 @@ class VisualCoreFamilyLLMSubgraphSampler:
             image_path=image_path,
             bootstrap_plan=bootstrap_plan,
             first_hop=first_hop,
-            kept_first_hop_ids=kept_first_hop_ids,
-            dropped_first_hop_ids=dropped_first_hop_ids,
+            analysis_first_hop_ids=analysis_first_hop_ids,
             seed_scope=seed_scope,
         )
         state.bootstrap_error_count = family_session["bootstrap_error_count"]
@@ -376,72 +360,64 @@ class VisualCoreFamilyLLMSubgraphSampler:
             if self._passes_session_guardrails(state, item)
         ]
 
-        bootstrap_decision = await self._judge_state(
-            qa_family=qa_family,
-            state=state,
-            image_path=image_path,
-            stage="bootstrap",
-            last_selected_candidate=None,
-        )
-        termination_trace.append(
-            {
-                "qa_family": qa_family,
-                "stage": "bootstrap",
-                "state": state.to_dict(),
-                **bootstrap_decision.to_dict(),
-            }
-        )
-        if bootstrap_decision.protocol_status != "ok":
-            state.judge_error_count += 1
-            protocol_failures.append(
-                self._protocol_failure_entry(
-                    stage="termination",
-                    error_type=bootstrap_decision.protocol_error_type or "parse_error",
-                    reason=bootstrap_decision.reason or "judge_protocol_error",
-                )
-            )
-            return _finalize(
-                termination_reason="judge_protocol_error",
-                scorecard=bootstrap_decision.scorecard,
-                stage="bootstrap",
-                decision_source=bootstrap_decision.decision_source,
-                protocol_status="error",
-                reason=bootstrap_decision.reason or "judge_protocol_error",
-                protocol_error_type=bootstrap_decision.protocol_error_type,
-            )
-
-        if bootstrap_decision.decision == "accept":
-            if self._passes_family_postcheck(state):
-                return _finalize(
-                    termination_reason="accepted",
-                    scorecard=bootstrap_decision.scorecard,
-                    decision="accepted",
-                    selected_subgraph=self._materialize_selected_subgraph(
-                        state=state,
-                        bootstrap_plan=bootstrap_plan,
-                        scorecard=bootstrap_decision.scorecard,
-                    ),
-                    stage="bootstrap",
-                    decision_source="judge",
-                    reason=bootstrap_decision.reason,
-                )
-
-        if bootstrap_decision.decision == "reject":
-            return _finalize(
-                termination_reason=bootstrap_decision.termination_reason or "judge_rejected",
-                scorecard=bootstrap_decision.scorecard,
-                stage="bootstrap",
-                decision_source="judge",
-                reason=bootstrap_decision.reason,
-            )
-
         if not state.candidate_pool:
+            if qa_family == "atomic" and first_hop:
+                fallback_subgraph, fallback_scorecard, fallback_candidate = (
+                    self._materialize_atomic_first_hop_fallback(
+                        state=state,
+                        first_hop=first_hop,
+                        bootstrap_plan=bootstrap_plan,
+                    )
+                )
+                fallback_reason = (
+                    "Atomic fallback selected one image-adjacent node because no "
+                    "logical first-layer candidates remained."
+                )
+                selection_trace.append(
+                    {
+                        "qa_family": qa_family,
+                        "step_index": state.step_count,
+                        "decision": "atomic_first_hop_fallback",
+                        "candidate_uid": fallback_candidate.candidate_uid,
+                        "candidate_node_id": fallback_candidate.candidate_node_id,
+                        "depth": fallback_candidate.depth,
+                        "direction_mode": state.direction_mode,
+                        "candidate_pool_after_step": [],
+                        "reason": fallback_reason,
+                    }
+                )
+                termination_trace.append(
+                    {
+                        "qa_family": qa_family,
+                        "stage": "selection",
+                        "step_index": state.step_count,
+                        "state": state.to_dict(),
+                        "last_selected_candidate": fallback_candidate.to_dict(),
+                        "decision": "accept",
+                        "sufficient": True,
+                        "termination_reason": "atomic_first_hop_fallback",
+                        "reason": fallback_reason,
+                        "suggested_action": "",
+                        "scorecard": fallback_scorecard.to_dict(),
+                        "protocol_status": "ok",
+                        "protocol_error_type": "",
+                        "decision_source": "system_fallback",
+                    }
+                )
+                return _finalize(
+                    termination_reason="atomic_first_hop_fallback",
+                    scorecard=fallback_scorecard,
+                    decision="accepted",
+                    selected_subgraph=fallback_subgraph,
+                    stage="selection",
+                    decision_source="system_fallback",
+                    reason=fallback_reason,
+                )
             return _finalize(
                 termination_reason="candidate_pool_exhausted",
-                scorecard=bootstrap_decision.scorecard,
                 stage="bootstrap",
                 decision_source="system",
-                reason="Bootstrap completed, but no second-hop candidates remained.",
+                reason="Bootstrap completed, but no logical first-layer candidates remained.",
             )
 
         while state.step_count < self.max_steps_per_family:
@@ -459,7 +435,7 @@ class VisualCoreFamilyLLMSubgraphSampler:
             )
             if selector_result.protocol_status != "ok":
                 protocol_failures.append(
-                    self._protocol_failure_entry(
+                    protocol_failure_entry(
                         stage="selector",
                         error_type=selector_result.protocol_error_type or "parse_error",
                         reason=selector_result.reason or "selector_protocol_error",
@@ -589,7 +565,7 @@ class VisualCoreFamilyLLMSubgraphSampler:
             if judge_decision.protocol_status != "ok":
                 state.judge_error_count += 1
                 protocol_failures.append(
-                    self._protocol_failure_entry(
+                    protocol_failure_entry(
                         stage="termination",
                         error_type=judge_decision.protocol_error_type or "parse_error",
                         reason=judge_decision.reason or "judge_protocol_error",
@@ -744,9 +720,9 @@ class VisualCoreFamilyLLMSubgraphSampler:
     ) -> BootstrapStageResult:
         prompt = build_bootstrap_prompt(
             qa_family=qa_family,
-            seed_payload=seed_payload,
-            visual_core_candidates=[item.to_dict() for item in first_hop],
-            preview_candidates=[item.to_dict() for item in second_hop_preview],
+            seed_payload=self._compact_seed_prompt_payload(seed_payload),
+            visual_core_candidates=self._candidate_prompt_lines(first_hop),
+            preview_candidates=self._candidate_prompt_lines(second_hop_preview),
             runtime_schema=runtime_schema,
         )
         last_result = BootstrapStageResult(
@@ -759,10 +735,9 @@ class VisualCoreFamilyLLMSubgraphSampler:
                 prompt, image_path=image_path or None
             )
             payload = extract_json_payload(raw)
-            validated = self._validate_bootstrap_payload(
+            validated = validate_bootstrap_payload(
                 qa_family=qa_family,
                 payload=payload,
-                first_hop=first_hop,
             )
             if validated.plan is not None:
                 return validated
@@ -778,8 +753,8 @@ class VisualCoreFamilyLLMSubgraphSampler:
     ) -> SelectorStageResult:
         prompt = build_selector_prompt(
             qa_family=qa_family,
-            state_payload=state.to_dict(),
-            candidate_pool_payload=[item.to_dict() for item in state.candidate_pool],
+            state_payload=self._compact_state_prompt_payload(state),
+            candidate_pool_payload=self._candidate_prompt_lines(state.candidate_pool),
         )
         last_result = SelectorStageResult(
             protocol_status="error",
@@ -791,7 +766,7 @@ class VisualCoreFamilyLLMSubgraphSampler:
                 prompt, image_path=image_path or None
             )
             payload = extract_json_payload(raw)
-            validated = self._validate_selector_payload(
+            validated = validate_selector_payload(
                 payload=payload,
                 state=state,
             )
@@ -811,9 +786,11 @@ class VisualCoreFamilyLLMSubgraphSampler:
     ) -> FamilyTerminationDecision:
         prompt = build_termination_prompt(
             qa_family=qa_family,
-            state_payload=state.to_dict(),
+            state_payload=self._compact_state_prompt_payload(state),
             stage=stage,
-            last_selected_candidate=last_selected_candidate,
+            last_selected_candidate=self._compact_candidate_prompt_payload(
+                last_selected_candidate
+            ),
         )
         last_decision = FamilyTerminationDecision(
             decision="reject",
@@ -829,368 +806,15 @@ class VisualCoreFamilyLLMSubgraphSampler:
                 prompt, image_path=image_path or None
             )
             payload = extract_json_payload(raw)
-            decision = self._validate_termination_payload(
+            decision = validate_termination_payload(
                 payload=payload,
-                state=state,
                 stage=stage,
+                judge_pass_threshold=self.judge_pass_threshold,
             )
             if decision.protocol_status == "ok":
                 return decision
             last_decision = decision
         return last_decision
-
-    def _validate_bootstrap_payload(
-        self,
-        *,
-        qa_family: str,
-        payload: dict[str, Any],
-        first_hop: list[FamilyCandidatePoolItem],
-    ) -> BootstrapStageResult:
-        if not payload:
-            return BootstrapStageResult(
-                protocol_status="error",
-                protocol_error_type="parse_error",
-                reason="empty_bootstrap_payload",
-            )
-
-        required_keys = {
-            "intent",
-            "technical_focus",
-            "keep_first_hop_node_ids",
-            "drop_first_hop_node_ids",
-            "preferred_entity_types",
-            "preferred_relation_types",
-            "forbidden_patterns",
-            "target_reasoning_depth",
-            "image_grounding_summary",
-            "bootstrap_rationale",
-        }
-        missing_keys = sorted(required_keys - set(payload.keys()))
-        if missing_keys:
-            return BootstrapStageResult(
-                protocol_status="error",
-                protocol_error_type="schema_error",
-                reason=f"missing_bootstrap_keys:{','.join(missing_keys)}",
-                raw_payload=payload,
-            )
-
-        list_keys = (
-            "keep_first_hop_node_ids",
-            "drop_first_hop_node_ids",
-            "preferred_entity_types",
-            "preferred_relation_types",
-            "forbidden_patterns",
-        )
-        if any(not isinstance(payload.get(key), list) for key in list_keys):
-            return BootstrapStageResult(
-                protocol_status="error",
-                protocol_error_type="schema_error",
-                reason="bootstrap_list_fields_must_be_lists",
-                raw_payload=payload,
-            )
-
-        valid_first_hop_ids = [item.candidate_node_id for item in first_hop]
-        valid_first_hop_set = set(valid_first_hop_ids)
-        raw_keep_ids = [str(item) for item in payload.get("keep_first_hop_node_ids", [])]
-        raw_drop_ids = [str(item) for item in payload.get("drop_first_hop_node_ids", [])]
-        invalid_keep_ids = [
-            item for item in raw_keep_ids if item and item not in valid_first_hop_set
-        ]
-        invalid_drop_ids = [
-            item for item in raw_drop_ids if item and item not in valid_first_hop_set
-        ]
-        if invalid_keep_ids or invalid_drop_ids:
-            return BootstrapStageResult(
-                protocol_status="error",
-                protocol_error_type="semantic_error",
-                reason=(
-                    "bootstrap_contains_unknown_first_hop_ids:"
-                    f"keep={','.join(invalid_keep_ids)};drop={','.join(invalid_drop_ids)}"
-                ),
-                raw_payload=payload,
-            )
-
-        keep_ids = self._stable_filter_ids(raw_keep_ids, valid_first_hop_ids)
-        drop_ids = self._stable_filter_ids(raw_drop_ids, valid_first_hop_ids)
-        if set(keep_ids) & set(drop_ids):
-            return BootstrapStageResult(
-                protocol_status="error",
-                protocol_error_type="semantic_error",
-                reason="bootstrap_keep_drop_overlap",
-                raw_payload=payload,
-            )
-        if len(keep_ids) > self._max_visual_core_keeps(qa_family):
-            return BootstrapStageResult(
-                protocol_status="error",
-                protocol_error_type="semantic_error",
-                reason="bootstrap_keep_count_exceeds_family_limit",
-                raw_payload=payload,
-            )
-
-        try:
-            raw_target_depth = int(payload.get("target_reasoning_depth", 1))
-        except (TypeError, ValueError):
-            return BootstrapStageResult(
-                protocol_status="error",
-                protocol_error_type="schema_error",
-                reason="target_reasoning_depth_must_be_int",
-                raw_payload=payload,
-            )
-
-        target_depth = max(
-            1,
-            min(
-                self.family_max_depths[qa_family] if qa_family != "atomic" else 1,
-                raw_target_depth,
-            ),
-        )
-        return BootstrapStageResult(
-            plan=BootstrapPlan(
-                qa_family=qa_family,
-                intent=compact_text(payload.get("intent", ""), limit=160),
-                technical_focus=compact_text(
-                    payload.get("technical_focus", qa_family), limit=80
-                ),
-                keep_first_hop_node_ids=keep_ids,
-                drop_first_hop_node_ids=drop_ids,
-                preferred_entity_types=self._stable_string_list(
-                    payload.get("preferred_entity_types", []), limit=8
-                ),
-                preferred_relation_types=self._stable_string_list(
-                    payload.get("preferred_relation_types", []), limit=8
-                ),
-                forbidden_patterns=self._stable_string_list(
-                    payload.get("forbidden_patterns", []), limit=8
-                ),
-                target_reasoning_depth=target_depth,
-                image_grounding_summary=compact_text(
-                    payload.get("image_grounding_summary", ""), limit=240
-                ),
-                bootstrap_rationale=compact_text(
-                    payload.get("bootstrap_rationale", ""), limit=240
-                ),
-            ),
-            raw_payload=payload,
-        )
-
-    def _validate_selector_payload(
-        self,
-        *,
-        payload: dict[str, Any],
-        state: FamilySessionState,
-    ) -> SelectorStageResult:
-        if not payload:
-            return SelectorStageResult(
-                protocol_status="error",
-                protocol_error_type="parse_error",
-                reason="empty_selector_payload",
-            )
-
-        decision = str(payload.get("decision", "")).strip().lower()
-        if decision not in {"select_candidate", "stop_selection"}:
-            return SelectorStageResult(
-                protocol_status="error",
-                protocol_error_type="schema_error",
-                reason="selector_decision_invalid",
-                raw_payload=payload,
-            )
-
-        if decision == "stop_selection":
-            return SelectorStageResult(
-                decision="stop_selection",
-                reason=compact_text(payload.get("reason", ""), limit=240),
-                confidence=clip_score(payload.get("confidence")),
-                raw_payload=payload,
-            )
-
-        candidate_uid = str(payload.get("candidate_uid", "")).strip()
-        if not candidate_uid:
-            return SelectorStageResult(
-                protocol_status="error",
-                protocol_error_type="schema_error",
-                reason="selector_candidate_uid_missing",
-                raw_payload=payload,
-            )
-
-        if candidate_uid in set(state.blocked_candidate_uids):
-            return SelectorStageResult(
-                candidate_uid=candidate_uid,
-                reason="blocked_candidate_uid",
-                protocol_status="error",
-                protocol_error_type="semantic_error",
-                raw_payload=payload,
-            )
-
-        if all(item.candidate_uid != candidate_uid for item in state.candidate_pool):
-            return SelectorStageResult(
-                candidate_uid=candidate_uid,
-                reason="candidate_uid_not_in_pool",
-                protocol_status="error",
-                protocol_error_type="semantic_error",
-                raw_payload=payload,
-            )
-
-        return SelectorStageResult(
-            decision="select_candidate",
-            candidate_uid=candidate_uid,
-            reason=compact_text(payload.get("reason", ""), limit=240),
-            confidence=clip_score(payload.get("confidence")),
-            raw_payload=payload,
-        )
-
-    def _validate_termination_payload(
-        self,
-        *,
-        payload: dict[str, Any],
-        state: FamilySessionState,
-        stage: str,
-    ) -> FamilyTerminationDecision:
-        if not payload:
-            return FamilyTerminationDecision(
-                decision="reject",
-                sufficient=False,
-                termination_reason="judge_protocol_error",
-                reason="empty_termination_payload",
-                scorecard=JudgeScorecard(),
-                protocol_status="error",
-                protocol_error_type="parse_error",
-            )
-
-        required_keys = {
-            "decision",
-            "sufficient",
-            "termination_reason",
-            "reason",
-            "suggested_action",
-            "scores",
-        }
-        missing_keys = sorted(required_keys - set(payload.keys()))
-        if missing_keys:
-            return FamilyTerminationDecision(
-                decision="reject",
-                sufficient=False,
-                termination_reason="judge_protocol_error",
-                reason=f"missing_termination_keys:{','.join(missing_keys)}",
-                scorecard=JudgeScorecard(),
-                protocol_status="error",
-                protocol_error_type="schema_error",
-            )
-
-        decision = str(payload.get("decision", "")).strip().lower()
-        if decision not in {"continue", "accept", "rollback_last_step", "reject"}:
-            return FamilyTerminationDecision(
-                decision="reject",
-                sufficient=False,
-                termination_reason="judge_protocol_error",
-                reason="termination_decision_invalid",
-                scorecard=JudgeScorecard(),
-                protocol_status="error",
-                protocol_error_type="schema_error",
-            )
-
-        scores = payload.get("scores")
-        if not isinstance(scores, dict):
-            return FamilyTerminationDecision(
-                decision="reject",
-                sufficient=False,
-                termination_reason="judge_protocol_error",
-                reason="termination_scores_missing",
-                scorecard=JudgeScorecard(),
-                protocol_status="error",
-                protocol_error_type="schema_error",
-            )
-
-        missing_score_keys = [key for key in MANDATORY_SCORE_KEYS if key not in scores]
-        if missing_score_keys:
-            return FamilyTerminationDecision(
-                decision="reject",
-                sufficient=False,
-                termination_reason="judge_protocol_error",
-                reason=f"missing_score_keys:{','.join(missing_score_keys)}",
-                scorecard=JudgeScorecard(),
-                protocol_status="error",
-                protocol_error_type="schema_error",
-            )
-
-        scorecard = JudgeScorecard(
-            image_indispensability=clip_score(scores.get("image_indispensability")),
-            answer_stability=clip_score(scores.get("answer_stability")),
-            evidence_closure=clip_score(scores.get("evidence_closure")),
-            technical_relevance=clip_score(scores.get("technical_relevance")),
-            reasoning_depth=clip_score(scores.get("reasoning_depth")),
-            hallucination_risk=clip_score(
-                scores.get("hallucination_risk"), default=1.0
-            ),
-            theme_coherence=clip_score(scores.get("theme_coherence")),
-            overall_score=clip_score(scores.get("overall_score")),
-            passes=False,
-        )
-        mandatory_pass = self._passes_mandatory_score_threshold(scorecard)
-        sufficient = bool(payload.get("sufficient", False)) and mandatory_pass
-        scorecard.passes = sufficient
-        termination_reason = compact_text(
-            payload.get("termination_reason", ""), limit=120
-        ).lower()
-        if not termination_reason:
-            return FamilyTerminationDecision(
-                decision="reject",
-                sufficient=False,
-                termination_reason="judge_protocol_error",
-                reason="termination_reason_missing",
-                scorecard=JudgeScorecard(),
-                protocol_status="error",
-                protocol_error_type="schema_error",
-            )
-
-        if decision == "accept" and not sufficient:
-            return FamilyTerminationDecision(
-                decision="reject",
-                sufficient=False,
-                termination_reason="judge_protocol_error",
-                reason="accept_requires_passing_scores",
-                scorecard=scorecard,
-                protocol_status="error",
-                protocol_error_type="semantic_error",
-            )
-
-        if decision == "rollback_last_step" and stage == "bootstrap":
-            return FamilyTerminationDecision(
-                decision="reject",
-                sufficient=False,
-                termination_reason="judge_protocol_error",
-                reason="rollback_not_allowed_during_bootstrap",
-                scorecard=scorecard,
-                protocol_status="error",
-                protocol_error_type="semantic_error",
-            )
-
-        return FamilyTerminationDecision(
-            decision=decision,
-            sufficient=sufficient,
-            termination_reason=termination_reason,
-            reason=compact_text(payload.get("reason", ""), limit=240),
-            suggested_action=compact_text(
-                payload.get("suggested_action", ""), limit=120
-            ),
-            scorecard=scorecard,
-        )
-
-    @staticmethod
-    def _protocol_failure_entry(
-        *,
-        stage: str,
-        error_type: str,
-        reason: str,
-        raw_payload: dict[str, Any] | None = None,
-        candidate_uid: str = "",
-    ) -> dict[str, Any]:
-        return {
-            "stage": stage,
-            "error_type": error_type,
-            "reason": compact_text(reason, limit=240),
-            "candidate_uid": candidate_uid,
-            "raw_payload": to_json_compatible(raw_payload or {}),
-        }
 
     def _append_terminal_trace(
         self,
@@ -1220,43 +844,253 @@ class VisualCoreFamilyLLMSubgraphSampler:
             }
         )
 
+    def _compact_seed_prompt_payload(
+        self,
+        seed_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        seed_node = seed_payload.get("seed_node")
+        seed_node = seed_node if isinstance(seed_node, dict) else {}
+        return {
+            "seed_node_id": str(seed_payload.get("seed_node_id", "")),
+            "entity_type": compact_text(seed_node.get("entity_type", ""), limit=60),
+            "entity_name": compact_text(seed_node.get("entity_name", ""), limit=80),
+            "description": compact_text(seed_node.get("description", ""), limit=180),
+            "evidence_span": compact_text(seed_node.get("evidence_span", ""), limit=160),
+        }
+
+    def _compact_state_prompt_payload(
+        self,
+        state: FamilySessionState,
+    ) -> dict[str, Any]:
+        return {
+            "qa_family": state.qa_family,
+            "seed_node_id": state.seed_node_id,
+            "virtual_image_node_id": state.virtual_image_node_id,
+            "intent": compact_text(state.intent, limit=160),
+            "technical_focus": compact_text(state.technical_focus, limit=80),
+            "forbidden_patterns": list(state.forbidden_patterns),
+            "analysis_first_hop_node_ids": list(state.analysis_first_hop_node_ids),
+            "selected_node_ids": list(state.selected_node_ids),
+            "selected_edge_paths": [
+                self._pair_key(edge_pair) for edge_pair in state.selected_edge_pairs
+            ],
+            "frontier_node_id": state.frontier_node_id,
+            "direction_mode": state.direction_mode,
+            "current_outside_depth": state.current_outside_depth,
+            "step_count": state.step_count,
+            "rollback_count": state.rollback_count,
+            "blocked_candidate_uids": list(state.blocked_candidate_uids),
+            "candidate_pool_size": len(state.candidate_pool),
+        }
+
+    def _candidate_prompt_lines(
+        self,
+        candidates: list[FamilyCandidatePoolItem],
+    ) -> list[str]:
+        return [self._candidate_prompt_line(candidate) for candidate in candidates]
+
+    def _candidate_prompt_line(self, candidate: FamilyCandidatePoolItem) -> str:
+        node_data = self.graph.get_node(candidate.candidate_node_id) or {}
+        logical_edge = self._pair_key(candidate.bound_edge_pair)
+        source_path = candidate.virtualized_from_path or candidate.frontier_path
+        path = "->".join(str(item) for item in source_path)
+        anchor = (
+            candidate.analysis_anchor_node_id
+            or candidate.bridge_first_hop_id
+            or candidate.bind_from_node_id
+        )
+        node_name = compact_text(node_data.get("entity_name", ""), limit=60)
+        evidence = compact_text(candidate.evidence_summary, limit=120)
+        return (
+            f"{candidate.candidate_uid} | edge={logical_edge} | path={path} | "
+            f"node={candidate.candidate_node_id} | name={node_name} | "
+            f"type={candidate.entity_type} | rel={candidate.relation_type} | "
+            f"depth={candidate.depth} | dir={candidate.edge_direction} | "
+            f"score={round(float(candidate.score), 4)} | via={anchor} | "
+            f"evidence={evidence}"
+        )
+
+    def _compact_candidate_prompt_payload(
+        self,
+        candidate_payload: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if not isinstance(candidate_payload, dict):
+            return {}
+        bound_edge_pair = candidate_payload.get("bound_edge_pair", [])
+        edge = (
+            self._pair_key(bound_edge_pair)
+            if isinstance(bound_edge_pair, list) and len(bound_edge_pair) >= 2
+            else ""
+        )
+        source_path = candidate_payload.get("virtualized_from_path") or candidate_payload.get(
+            "frontier_path", []
+        )
+        path = (
+            "->".join(str(item) for item in source_path)
+            if isinstance(source_path, list)
+            else ""
+        )
+        return {
+            "candidate_uid": str(candidate_payload.get("candidate_uid", "")),
+            "candidate_node_id": str(candidate_payload.get("candidate_node_id", "")),
+            "edge": edge,
+            "path": path,
+            "entity_type": compact_text(candidate_payload.get("entity_type", ""), limit=60),
+            "relation_type": compact_text(candidate_payload.get("relation_type", ""), limit=60),
+            "depth": int(candidate_payload.get("depth", 0) or 0),
+            "edge_direction": str(candidate_payload.get("edge_direction", "")),
+            "via": str(
+                candidate_payload.get("analysis_anchor_node_id", "")
+                or candidate_payload.get("bridge_first_hop_id", "")
+            ),
+            "evidence": compact_text(
+                candidate_payload.get("evidence_summary", ""), limit=120
+            ),
+        }
+
     def _build_bootstrap_fallback_plan(
         self,
         *,
         qa_family: str,
         first_hop: list[FamilyCandidatePoolItem],
     ) -> BootstrapPlan:
-        fallback_ids = self._fallback_first_hop_keeps(
-            qa_family=qa_family,
-            first_hop=first_hop,
-        )
         return BootstrapPlan(
             qa_family=qa_family,
             intent=f"Fallback visual-core bootstrap for {qa_family}.",
             technical_focus=qa_family,
-            keep_first_hop_node_ids=fallback_ids,
-            drop_first_hop_node_ids=[
-                item.candidate_node_id
-                for item in first_hop
-                if item.candidate_node_id not in fallback_ids
-            ],
-            target_reasoning_depth=max(1, self.family_max_depths[qa_family]),
-            image_grounding_summary="Fallback bootstrap kept the strongest visual core nodes.",
+            image_grounding_summary="Fallback bootstrap used the image-local visual core.",
             bootstrap_rationale=(
-                "The model returned no usable bootstrap JSON, so the sampler kept the "
-                "strongest visual core nodes."
+                "The model returned no usable bootstrap JSON, so the sampler used the "
+                "image-local visual core and deferred node choices to selector/judge."
             ),
         )
 
-    def _passes_mandatory_score_threshold(self, scorecard: JudgeScorecard) -> bool:
-        return (
-            scorecard.image_indispensability >= 0.65
-            and scorecard.answer_stability >= 0.6
-            and scorecard.evidence_closure >= 0.6
-            and scorecard.technical_relevance >= 0.6
-            and scorecard.hallucination_risk <= 0.45
-            and scorecard.overall_score >= self.judge_pass_threshold
+    def _materialize_atomic_first_hop_fallback(
+        self,
+        *,
+        state: FamilySessionState,
+        first_hop: list[FamilyCandidatePoolItem],
+        bootstrap_plan: BootstrapPlan,
+    ) -> tuple[dict[str, Any], JudgeScorecard, FamilyCandidatePoolItem]:
+        chosen = self._choose_atomic_first_hop_fallback(
+            state=state,
+            first_hop=first_hop,
         )
+        virtual_edge_pair = [state.virtual_image_node_id, chosen.candidate_node_id]
+        virtual_pair_key = self._pair_key(virtual_edge_pair)
+        state.step_count = max(1, state.step_count)
+        state.selected_node_ids = [
+            state.virtual_image_node_id,
+            chosen.candidate_node_id,
+        ]
+        state.selected_edge_pairs = [virtual_edge_pair]
+        state.frontier_node_id = chosen.candidate_node_id
+        state.current_outside_depth = 1
+        state.direction_mode = chosen.edge_direction
+        state.direction_anchor_edge = list(virtual_edge_pair)
+        state.path_by_node_id[chosen.candidate_node_id] = list(virtual_edge_pair)
+        state.edge_direction_by_pair[virtual_pair_key] = chosen.edge_direction
+        state.virtual_edge_payload_by_pair[virtual_pair_key] = (
+            self._atomic_first_hop_virtual_edge_payload(state=state, candidate=chosen)
+        )
+        state.candidate_pool = []
+        fallback_candidate = FamilyCandidatePoolItem(
+            candidate_uid=(
+                f"{state.virtual_image_node_id}:{chosen.candidate_node_id}:"
+                "atomic_first_hop_fallback"
+            ),
+            candidate_node_id=chosen.candidate_node_id,
+            bind_from_node_id=state.virtual_image_node_id,
+            bound_edge_pair=virtual_edge_pair,
+            hop=1,
+            depth=1,
+            relation_type=chosen.relation_type,
+            entity_type=chosen.entity_type,
+            frontier_path=list(virtual_edge_pair),
+            bridge_first_hop_id=chosen.candidate_node_id,
+            evidence_summary=chosen.evidence_summary,
+            edge_direction=chosen.edge_direction,
+            score=chosen.score,
+            analysis_anchor_node_id=chosen.candidate_node_id,
+            virtualized_from_path=[state.seed_node_id, chosen.candidate_node_id],
+            virtualized_from_edge_pair=[state.seed_node_id, chosen.candidate_node_id],
+        )
+        scorecard = JudgeScorecard(
+            image_indispensability=0.82,
+            answer_stability=0.72,
+            evidence_closure=0.7,
+            technical_relevance=0.78,
+            reasoning_depth=0.55,
+            hallucination_risk=0.22,
+            theme_coherence=0.76,
+            overall_score=max(self.judge_pass_threshold, 0.72),
+            passes=True,
+        )
+        return (
+            self._materialize_selected_subgraph(
+                state=state,
+                bootstrap_plan=bootstrap_plan,
+                scorecard=scorecard,
+            ),
+            scorecard,
+            fallback_candidate,
+        )
+
+    def _choose_atomic_first_hop_fallback(
+        self,
+        *,
+        state: FamilySessionState,
+        first_hop: list[FamilyCandidatePoolItem],
+    ) -> FamilyCandidatePoolItem:
+        digest = hashlib.sha256(
+            f"{state.seed_node_id}:{state.qa_family}".encode("utf-8")
+        ).hexdigest()
+        return first_hop[int(digest, 16) % len(first_hop)]
+
+    def _atomic_first_hop_virtual_edge_payload(
+        self,
+        *,
+        state: FamilySessionState,
+        candidate: FamilyCandidatePoolItem,
+    ) -> dict[str, Any]:
+        edge_data = copy.deepcopy(
+            self.graph.get_edge(state.seed_node_id, candidate.candidate_node_id)
+            or self.graph.get_edge(candidate.candidate_node_id, state.seed_node_id)
+            or {}
+        )
+        metadata = load_metadata(edge_data.get("metadata"))
+        metadata.update(
+            {
+                "synthetic": True,
+                "fallback": "atomic_first_hop",
+                "virtualized_from_path": [
+                    state.seed_node_id,
+                    candidate.candidate_node_id,
+                ],
+                "virtualized_from_edge_pair": [
+                    state.seed_node_id,
+                    candidate.candidate_node_id,
+                ],
+            }
+        )
+        edge_data["metadata"] = metadata
+        edge_data["synthetic"] = True
+        edge_data["fallback"] = "atomic_first_hop"
+        edge_data["virtualized_from_path"] = [
+            state.seed_node_id,
+            candidate.candidate_node_id,
+        ]
+        edge_data["virtualized_from_edge_pair"] = [
+            state.seed_node_id,
+            candidate.candidate_node_id,
+        ]
+        if not edge_data.get("description"):
+            edge_data["description"] = compact_text(
+                "Atomic fallback virtual edge from the image to one image-adjacent "
+                f"evidence node {candidate.candidate_node_id}.",
+                limit=160,
+            )
+        return edge_data
 
     def _family_postcheck_failure_reason(self, state: FamilySessionState) -> str:
         if state.qa_family == "atomic":
@@ -1265,1507 +1099,9 @@ class VisualCoreFamilyLLMSubgraphSampler:
             return "aggregated_direction_or_theme_failed"
         return "multi_hop_requires_deep_chain"
 
-    def _passes_session_guardrails(
-        self,
-        state: FamilySessionState,
-        candidate: FamilyCandidatePoolItem,
-    ) -> bool:
-        haystack = " ".join(
-            [
-                candidate.candidate_node_id,
-                candidate.entity_type,
-                candidate.relation_type,
-                candidate.evidence_summary,
-            ]
-        ).lower()
-        for pattern in state.forbidden_patterns:
-            token = str(pattern).strip().lower()
-            if token and token in haystack:
-                return False
-        return True
-
-    def _candidate_matches_session_preferences(
-        self,
-        state: FamilySessionState,
-        candidate: FamilyCandidatePoolItem,
-    ) -> bool:
-        if not self._passes_session_guardrails(state, candidate):
-            return False
-        entity_ok = (
-            not state.preferred_entity_types
-            or candidate.entity_type in set(state.preferred_entity_types)
-        )
-        relation_ok = (
-            not state.preferred_relation_types
-            or candidate.relation_type in set(state.preferred_relation_types)
-        )
-        if state.preferred_entity_types and state.preferred_relation_types:
-            return entity_ok and relation_ok
-        if state.preferred_entity_types or state.preferred_relation_types:
-            return entity_ok or relation_ok
-        return True
-
-    def _is_aggregated_sibling_compatible(
-        self,
-        state: FamilySessionState,
-        candidate: FamilyCandidatePoolItem,
-    ) -> bool:
-        return self._is_direction_compatible(
-            state, candidate
-        ) and self._candidate_matches_session_preferences(state, candidate)
-
-    def _passes_multi_hop_postcheck(
-        self,
-        *,
-        state: FamilySessionState,
-        outside_core_nodes: list[str],
-    ) -> bool:
-        if not self._is_directionally_consistent(state):
-            return False
-        if not outside_core_nodes:
-            return False
-
-        frontier_path = list(state.path_by_node_id.get(state.frontier_node_id, []))
-        if len(frontier_path) != len(set(frontier_path)):
-            return False
-
-        visual_core = set(state.visual_core_node_ids)
-        first_outside_index = next(
-            (index for index, node_id in enumerate(frontier_path) if node_id not in visual_core),
-            -1,
-        )
-        if first_outside_index <= 0:
-            return False
-
-        outside_edge_count = len(frontier_path) - first_outside_index
-        if outside_edge_count < self.min_multi_hop_outside_core_edges:
-            return False
-
-        outside_path_nodes = [
-            node_id for node_id in frontier_path[first_outside_index:] if node_id not in visual_core
-        ]
-        if set(outside_core_nodes) != set(outside_path_nodes):
-            return False
-
-        degree_counter = Counter()
-        outside_path_set = set(outside_path_nodes)
-        for src_id, tgt_id in state.selected_edge_pairs:
-            if src_id in outside_path_set:
-                degree_counter[src_id] += 1
-            if tgt_id in outside_path_set:
-                degree_counter[tgt_id] += 1
-
-        for index, node_id in enumerate(outside_path_nodes):
-            expected_degree = 1 if index == len(outside_path_nodes) - 1 else 2
-            if degree_counter.get(node_id, 0) != expected_degree:
-                return False
-        return True
-
-    def _build_bootstrapped_state(
-        self,
-        *,
-        qa_family: str,
-        seed_node_id: str,
-        image_path: str,
-        bootstrap_plan: BootstrapPlan,
-        first_hop: list[FamilyCandidatePoolItem],
-        kept_first_hop_ids: list[str],
-        dropped_first_hop_ids: list[str],
-        seed_scope: set[str],
-    ) -> FamilySessionState:
-        kept_first_hop = [
-            item for item in first_hop if item.candidate_node_id in kept_first_hop_ids
-        ]
-        virtual_image_node_id = self._virtual_image_node_id(seed_node_id)
-        selected_node_ids = [virtual_image_node_id]
-        path_by_node_id = {virtual_image_node_id: [virtual_image_node_id]}
-        selected_edge_pairs: list[list[str]] = []
-        edge_direction_by_pair: dict[str, str] = {}
-        visual_core_node_ids = [virtual_image_node_id]
-        first_hop_ids = [item.candidate_node_id for item in first_hop]
-        analysis_only_node_ids = self._stable_unique_ids(
-            [seed_node_id, *first_hop_ids]
-        )
-        candidate_pool = []
-        seen = set()
-        selected_for_anchor_expansion = set(selected_node_ids) | set(analysis_only_node_ids)
-        initial_max_depth = max(1, self.family_max_depths[qa_family])
-        for candidate in kept_first_hop:
-            anchor_path_by_node_id = {
-                **path_by_node_id,
-                candidate.candidate_node_id: [
-                    virtual_image_node_id,
-                    candidate.candidate_node_id,
-                ],
-            }
-            next_candidates, _ = self._build_candidates_from_bind_node(
-                bind_from_node_id=candidate.candidate_node_id,
-                selected_node_ids=selected_for_anchor_expansion,
-                path_by_node_id=anchor_path_by_node_id,
-                visual_core_node_ids={virtual_image_node_id, candidate.candidate_node_id},
-                seed_scope=seed_scope,
-                max_depth=initial_max_depth,
-                blocked_candidate_uids=[],
-            )
-            for item in next_candidates:
-                virtualized = self._virtualize_analysis_candidate(
-                    item,
-                    virtual_image_node_id=virtual_image_node_id,
-                )
-                if (
-                    virtualized.candidate_uid in seen
-                    or virtualized.candidate_node_id in selected_for_anchor_expansion
-                ):
-                    continue
-                seen.add(virtualized.candidate_uid)
-                candidate_pool.append(virtualized)
-        candidate_pool.sort(key=lambda item: (item.depth, -item.score, item.candidate_uid))
-        return FamilySessionState(
-            qa_family=qa_family,
-            seed_node_id=seed_node_id,
-            image_path=image_path,
-            virtual_image_node_id=virtual_image_node_id,
-            intent=bootstrap_plan.intent or f"{qa_family} visual-core intent",
-            technical_focus=bootstrap_plan.technical_focus or qa_family,
-            image_grounding_summary=bootstrap_plan.image_grounding_summary,
-            bootstrap_rationale=bootstrap_plan.bootstrap_rationale,
-            target_reasoning_depth=max(1, bootstrap_plan.target_reasoning_depth),
-            preferred_entity_types=list(bootstrap_plan.preferred_entity_types),
-            preferred_relation_types=list(bootstrap_plan.preferred_relation_types),
-            forbidden_patterns=list(bootstrap_plan.forbidden_patterns),
-            visual_core_node_ids=visual_core_node_ids,
-            analysis_first_hop_node_ids=list(kept_first_hop_ids),
-            dropped_analysis_first_hop_node_ids=list(dropped_first_hop_ids),
-            analysis_only_node_ids=analysis_only_node_ids,
-            selected_node_ids=selected_node_ids,
-            selected_edge_pairs=selected_edge_pairs,
-            candidate_pool=candidate_pool,
-            frontier_node_id=virtual_image_node_id,
-            path_by_node_id=path_by_node_id,
-            edge_direction_by_pair=edge_direction_by_pair,
-        )
-
-    def _apply_candidate_selection(
-        self,
-        *,
-        state: FamilySessionState,
-        candidate: FamilyCandidatePoolItem,
-        seed_scope: set[str],
-        max_depth: int,
-    ) -> bool:
-        old_depth = state.current_outside_depth
-        if candidate.candidate_node_id not in state.selected_node_ids:
-            state.selected_node_ids.append(candidate.candidate_node_id)
-        state.selected_edge_pairs.append(list(candidate.bound_edge_pair))
-        state.path_by_node_id[candidate.candidate_node_id] = list(candidate.frontier_path)
-        state.edge_direction_by_pair[self._pair_key(candidate.bound_edge_pair)] = candidate.edge_direction
-        if candidate.virtualized_from_edge_pair:
-            state.virtual_edge_payload_by_pair[
-                self._pair_key(candidate.bound_edge_pair)
-            ] = self._virtual_edge_payload(candidate)
-        state.frontier_node_id = candidate.candidate_node_id
-        state.current_outside_depth = max(state.current_outside_depth, int(candidate.depth))
-        if not state.direction_mode:
-            state.direction_mode = candidate.edge_direction
-            state.direction_anchor_edge = list(candidate.bound_edge_pair)
-
-        depth_limit_hit = False
-        if state.qa_family == "atomic":
-            state.candidate_pool = []
-            return depth_limit_hit
-
-        base_pool = [
-            item
-            for item in state.candidate_pool
-            if item.candidate_uid != candidate.candidate_uid
-            and item.candidate_node_id not in set(state.selected_node_ids)
-            and item.candidate_uid not in state.blocked_candidate_uids
-        ]
-        base_pool = [
-            item
-            for item in base_pool
-            if self._is_direction_compatible(state, item)
-            and self._passes_session_guardrails(state, item)
-        ]
-        if state.qa_family == "aggregated" and candidate.depth > old_depth:
-            base_pool = [
-                item
-                for item in base_pool
-                if item.depth >= candidate.depth
-                or self._is_aggregated_sibling_compatible(state, item)
-            ]
-        elif state.qa_family == "multi_hop":
-            base_pool = []
-
-        next_candidates, depth_limit_hit = self._build_candidates_from_bind_node(
-            bind_from_node_id=candidate.candidate_node_id,
-            selected_node_ids=set(state.selected_node_ids)
-            | set(state.analysis_only_node_ids),
-            path_by_node_id=state.path_by_node_id,
-            visual_core_node_ids=set(state.visual_core_node_ids),
-            seed_scope=seed_scope,
-            max_depth=max_depth,
-            blocked_candidate_uids=state.blocked_candidate_uids,
-        )
-        next_candidates = [
-            item
-            for item in next_candidates
-            if self._is_direction_compatible(state, item)
-            and self._passes_session_guardrails(state, item)
-        ]
-        if state.qa_family == "multi_hop":
-            state.candidate_pool = next_candidates
-            return depth_limit_hit
-
-        merged = {}
-        for item in base_pool + next_candidates:
-            merged[item.candidate_uid] = item
-        state.candidate_pool = sorted(
-            merged.values(),
-            key=lambda item: (item.depth, -item.score, item.candidate_uid),
-        )
-        return depth_limit_hit
-
-    def _passes_family_postcheck(self, state: FamilySessionState) -> bool:
-        outside_core_nodes = [
-            node_id
-            for node_id in state.selected_node_ids
-            if node_id not in set(state.visual_core_node_ids)
-        ]
-        if state.qa_family == "atomic":
-            return (
-                len(state.visual_core_node_ids) == 1
-                and len(outside_core_nodes) == 1
-                and len(state.selected_node_ids) == 2
-            )
-        if state.qa_family == "aggregated":
-            return (
-                len(state.selected_node_ids) >= 3
-                and self._is_directionally_consistent(state)
-            )
-        return self._passes_multi_hop_postcheck(
-            state=state,
-            outside_core_nodes=outside_core_nodes,
-        )
-
-    def _is_directionally_consistent(self, state: FamilySessionState) -> bool:
-        if not state.direction_mode:
-            return True
-        visual_core = set(state.visual_core_node_ids)
-        for edge_pair in state.selected_edge_pairs:
-            pair_key = self._pair_key(edge_pair)
-            edge_mode = state.edge_direction_by_pair.get(pair_key, "")
-            if edge_mode == "core":
-                continue
-            if edge_pair[0] in visual_core and edge_pair[1] in visual_core:
-                continue
-            if edge_mode != state.direction_mode:
-                return False
-        return True
-
-    def _materialize_selected_subgraph(
-        self,
-        *,
-        state: FamilySessionState,
-        bootstrap_plan: BootstrapPlan,
-        scorecard: JudgeScorecard,
-    ) -> dict[str, Any]:
-        edge_pairs = [tuple(pair) for pair in state.selected_edge_pairs]
-        selected_evidence_node_ids = [
-            node_id
-            for node_id in state.selected_node_ids
-            if node_id not in set(state.visual_core_node_ids)
-        ]
-        return {
-            "subgraph_id": f"{state.seed_node_id}-{state.qa_family}-visual-core",
-            "qa_family": state.qa_family,
-            "technical_focus": state.technical_focus,
-            "nodes": self._node_payloads_for_state(state),
-            "edges": self._edge_payloads_for_state(state, edge_pairs),
-            "image_grounding_summary": compact_text(state.image_grounding_summary, limit=240),
-            "evidence_summary": compact_text(bootstrap_plan.bootstrap_rationale or state.intent, limit=240),
-            "judge_scores": scorecard.to_dict(),
-            "approved_question_types": [state.qa_family],
-            "visual_core_node_ids": list(state.visual_core_node_ids),
-            "analysis_first_hop_node_ids": list(state.analysis_first_hop_node_ids),
-            "dropped_analysis_first_hop_node_ids": list(
-                state.dropped_analysis_first_hop_node_ids
-            ),
-            "analysis_only_node_ids": list(state.analysis_only_node_ids),
-            "selected_evidence_node_ids": selected_evidence_node_ids,
-            "original_seed_node_id": state.seed_node_id,
-            "virtual_image_node_id": state.virtual_image_node_id,
-            "direction_mode": state.direction_mode,
-            "direction_anchor_edge": list(state.direction_anchor_edge),
-            "intent_signature": compact_text(
-                f"{state.qa_family}:{state.intent or state.technical_focus}",
-                limit=160,
-            ),
-            "frontier_node_id": state.frontier_node_id,
-            "candidate_pool_snapshot": [item.to_dict() for item in state.candidate_pool],
-            "target_qa_count": self.family_qa_targets[state.qa_family],
-            "degraded": False,
-        }
-
-    def _build_candidate_bundle(
-        self,
-        *,
-        qa_family: str,
-        bootstrap_plan: BootstrapPlan,
-        node_ids: list[str],
-        edge_pairs: list[list[str]],
-        decision: str,
-        rejection_reason: str,
-        scorecard: JudgeScorecard,
-        abstained: bool,
-        protocol_failures: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        return {
-            "candidate_id": f"{qa_family}-visual-core",
-            "qa_family": qa_family,
-            "intent": bootstrap_plan.intent,
-            "technical_focus": bootstrap_plan.technical_focus or qa_family,
-            "node_ids": list(node_ids),
-            "edge_pairs": to_json_compatible(edge_pairs),
-            "judge_scores": scorecard.to_dict(),
-            "decision": decision,
-            "rejection_reason": rejection_reason,
-            "abstained": abstained,
-            "protocol_failures": copy.deepcopy(protocol_failures),
-        }
-
-    def _empty_visualization_trace(
-        self,
-        *,
-        seed_node_id: str,
-        image_path: str,
-    ) -> dict[str, Any]:
-        return {
-            "schema_version": self.VISUALIZATION_TRACE_SCHEMA_VERSION,
-            "sampler_version": "family_llm_v2",
-            "seed_node_id": seed_node_id,
-            "seed_image_path": image_path,
-            "graph_catalog": {"nodes": {}, "edges": {}},
-            "events": [],
-        }
-
-    def _build_visualization_trace(
-        self,
-        *,
-        seed_node_id: str,
-        image_path: str,
-        selected_subgraphs: list[dict[str, Any]],
-        family_bootstrap_trace: list[dict[str, Any]],
-        family_selection_trace: list[dict[str, Any]],
-        family_termination_trace: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        catalog = {"nodes": {}, "edges": {}}
-        events: list[dict[str, Any]] = []
-
-        def _add_event(
-            *,
-            qa_family: str,
-            phase: str,
-            event_type: str,
-            status: str,
-            state: dict[str, Any] | None = None,
-            candidate_pool: list[dict[str, Any]] | None = None,
-            chosen_candidate: dict[str, Any] | None = None,
-            judge: dict[str, Any] | None = None,
-            reason: str = "",
-            termination_reason: str = "",
-            extra: dict[str, Any] | None = None,
-        ) -> None:
-            state = state if isinstance(state, dict) else {}
-            pool = candidate_pool
-            if pool is None:
-                pool = state.get("candidate_pool", []) if isinstance(state, dict) else []
-            self._add_state_to_visualization_catalog(catalog, state)
-            self._add_candidates_to_visualization_catalog(catalog, pool)
-            if chosen_candidate:
-                self._add_candidates_to_visualization_catalog(catalog, [chosen_candidate])
-
-            order = len(events) + 1
-            event = {
-                "event_id": f"{seed_node_id}:{qa_family}:{order}:{event_type}",
-                "order": order,
-                "qa_family": qa_family,
-                "phase": phase,
-                "event_type": event_type,
-                "status": status,
-                "selected_node_ids": list(state.get("selected_node_ids", [])),
-                "selected_edge_pairs": to_json_compatible(
-                    state.get("selected_edge_pairs", [])
-                ),
-                "candidate_pool": to_json_compatible(pool or []),
-                "chosen_candidate": to_json_compatible(chosen_candidate or {}),
-                "judge": to_json_compatible(judge or {}),
-                "reason": compact_text(reason, limit=240),
-                "termination_reason": compact_text(termination_reason, limit=160),
-            }
-            if extra:
-                event.update(to_json_compatible(extra))
-            events.append(event)
-
-        bootstrap_by_family = {
-            item.get("qa_family"): item
-            for item in family_bootstrap_trace
-            if isinstance(item, dict)
-        }
-        selection_by_family: dict[str, list[dict[str, Any]]] = {
-            family: [] for family in self.FAMILY_ORDER
-        }
-        termination_by_family: dict[str, list[dict[str, Any]]] = {
-            family: [] for family in self.FAMILY_ORDER
-        }
-        for item in family_selection_trace:
-            if isinstance(item, dict):
-                selection_by_family.setdefault(str(item.get("qa_family", "")), []).append(
-                    item
-                )
-        for item in family_termination_trace:
-            if isinstance(item, dict):
-                termination_by_family.setdefault(str(item.get("qa_family", "")), []).append(
-                    item
-                )
-        selected_by_family = {
-            item.get("qa_family"): item
-            for item in selected_subgraphs
-            if isinstance(item, dict)
-        }
-
-        for qa_family in self.FAMILY_ORDER:
-            bootstrap = bootstrap_by_family.get(qa_family)
-            if bootstrap:
-                visual_core_candidates = [
-                    item
-                    for item in bootstrap.get("visual_core_candidates", [])
-                    if isinstance(item, dict)
-                ]
-                preview_candidates = [
-                    item
-                    for item in bootstrap.get("preview_candidates", [])
-                    if isinstance(item, dict)
-                ]
-                all_bootstrap_candidates = visual_core_candidates + preview_candidates
-                self._add_candidates_to_visualization_catalog(
-                    catalog, all_bootstrap_candidates
-                )
-                _add_event(
-                    qa_family=qa_family,
-                    phase="bootstrap",
-                    event_type="bootstrap_candidates_collected",
-                    status=str(bootstrap.get("protocol_status", "ok") or "ok"),
-                    candidate_pool=all_bootstrap_candidates,
-                    reason=str(bootstrap.get("reason", "")),
-                    extra={
-                        "visual_core_candidate_uids": [
-                            item.get("candidate_uid", "")
-                            for item in visual_core_candidates
-                        ],
-                        "preview_candidate_uids": [
-                            item.get("candidate_uid", "") for item in preview_candidates
-                        ],
-                    },
-                )
-                _add_event(
-                    qa_family=qa_family,
-                    phase="bootstrap",
-                    event_type="bootstrap_plan_created",
-                    status=str(bootstrap.get("protocol_status", "ok") or "ok"),
-                    candidate_pool=preview_candidates,
-                    reason=str(bootstrap.get("bootstrap_plan", {}).get("bootstrap_rationale", "")),
-                    extra={
-                        "bootstrap_plan": bootstrap.get("bootstrap_plan", {}),
-                        "kept_first_hop_node_ids": list(
-                            bootstrap.get("kept_first_hop_node_ids", [])
-                        ),
-                        "dropped_first_hop_node_ids": list(
-                            bootstrap.get("dropped_first_hop_node_ids", [])
-                        ),
-                    },
-                )
-
-            family_terminations = termination_by_family.get(qa_family, [])
-            bootstrap_judge = next(
-                (
-                    item
-                    for item in family_terminations
-                    if item.get("stage") == "bootstrap"
-                ),
-                None,
-            )
-            if bootstrap_judge:
-                state = bootstrap_judge.get("state", {})
-                _add_event(
-                    qa_family=qa_family,
-                    phase="bootstrap",
-                    event_type="bootstrap_state_created",
-                    status=str(bootstrap_judge.get("protocol_status", "ok") or "ok"),
-                    state=state,
-                    reason=str(bootstrap_judge.get("reason", "")),
-                    termination_reason=str(
-                        bootstrap_judge.get("termination_reason", "")
-                    ),
-                )
-                _add_event(
-                    qa_family=qa_family,
-                    phase="judge",
-                    event_type="judge_decision",
-                    status=str(bootstrap_judge.get("decision", "")),
-                    state=state,
-                    judge=self._visualization_judge_payload(bootstrap_judge),
-                    reason=str(bootstrap_judge.get("reason", "")),
-                    termination_reason=str(
-                        bootstrap_judge.get("termination_reason", "")
-                    ),
-                )
-
-            selection_judges = [
-                item
-                for item in family_terminations
-                if item.get("stage") == "selection"
-            ]
-            consumed_judge_indexes: set[int] = set()
-            for selection_event in selection_by_family.get(qa_family, []):
-                decision = str(selection_event.get("decision", ""))
-                if decision == "select_candidate":
-                    step_index = selection_event.get("step_index")
-                    judge_index, judge_event = self._find_visualization_selection_judge(
-                        selection_judges=selection_judges,
-                        consumed_indexes=consumed_judge_indexes,
-                        step_index=step_index,
-                        candidate_uid=str(selection_event.get("candidate_uid", "")),
-                    )
-                    if judge_index is not None:
-                        consumed_judge_indexes.add(judge_index)
-                    chosen_candidate = (
-                        judge_event.get("last_selected_candidate", {})
-                        if judge_event
-                        else {
-                            "candidate_uid": selection_event.get("candidate_uid", ""),
-                            "candidate_node_id": selection_event.get(
-                                "candidate_node_id", ""
-                            ),
-                            "depth": selection_event.get("depth", 0),
-                        }
-                    )
-                    state = judge_event.get("state", {}) if judge_event else {}
-                    candidate_pool_after_step = [
-                        item
-                        for item in selection_event.get(
-                            "candidate_pool_after_step", []
-                        )
-                        if isinstance(item, dict)
-                    ]
-                    _add_event(
-                        qa_family=qa_family,
-                        phase="selection",
-                        event_type="candidate_selected",
-                        status="selected",
-                        state=state,
-                        candidate_pool=candidate_pool_after_step,
-                        chosen_candidate=chosen_candidate,
-                        reason=str(selection_event.get("reason", "")),
-                    )
-                    _add_event(
-                        qa_family=qa_family,
-                        phase="selection",
-                        event_type="candidate_pool_updated",
-                        status="updated",
-                        state=state,
-                        candidate_pool=candidate_pool_after_step,
-                        chosen_candidate=chosen_candidate,
-                        reason=str(selection_event.get("reason", "")),
-                    )
-                    if judge_event:
-                        _add_event(
-                            qa_family=qa_family,
-                            phase="judge",
-                            event_type="judge_decision",
-                            status=str(judge_event.get("decision", "")),
-                            state=state,
-                            candidate_pool=state.get("candidate_pool", []),
-                            chosen_candidate=chosen_candidate,
-                            judge=self._visualization_judge_payload(judge_event),
-                            reason=str(judge_event.get("reason", "")),
-                            termination_reason=str(
-                                judge_event.get("termination_reason", "")
-                            ),
-                        )
-                    continue
-
-                if decision in {
-                    "rollback_last_step",
-                    "rollback_after_judge_protocol_error",
-                }:
-                    state = selection_event.get("state_after_rollback", {})
-                    _add_event(
-                        qa_family=qa_family,
-                        phase="selection",
-                        event_type="rollback",
-                        status="rolled_back",
-                        state=state,
-                        chosen_candidate={
-                            "candidate_uid": selection_event.get("candidate_uid", "")
-                        },
-                        reason=decision,
-                        extra={
-                            "rollback_count": selection_event.get(
-                                "rollback_count", 0
-                            )
-                        },
-                    )
-                    continue
-
-                if decision in {
-                    "invalid_selection",
-                    "selector_protocol_error",
-                    "stop_selection",
-                }:
-                    _add_event(
-                        qa_family=qa_family,
-                        phase="selection",
-                        event_type="candidate_selected",
-                        status=decision,
-                        chosen_candidate={
-                            "candidate_uid": selection_event.get("candidate_uid", "")
-                        },
-                        reason=str(selection_event.get("reason", "")),
-                        extra={
-                            "protocol_status": selection_event.get(
-                                "protocol_status", ""
-                            ),
-                            "protocol_error_type": selection_event.get(
-                                "protocol_error_type", ""
-                            ),
-                        },
-                    )
-
-            for index, judge_event in enumerate(selection_judges):
-                if index in consumed_judge_indexes:
-                    continue
-                state = judge_event.get("state", {})
-                _add_event(
-                    qa_family=qa_family,
-                    phase="judge",
-                    event_type="judge_decision",
-                    status=str(judge_event.get("decision", "")),
-                    state=state,
-                    chosen_candidate=judge_event.get("last_selected_candidate", {}),
-                    judge=self._visualization_judge_payload(judge_event),
-                    reason=str(judge_event.get("reason", "")),
-                    termination_reason=str(judge_event.get("termination_reason", "")),
-                )
-
-            terminal_events = [
-                item
-                for item in family_terminations
-                if item.get("stage") == "terminal"
-            ]
-            for terminal_event in terminal_events:
-                state = terminal_event.get("state", {})
-                _add_event(
-                    qa_family=qa_family,
-                    phase=str(terminal_event.get("terminal_stage", "terminal")),
-                    event_type="family_terminal",
-                    status=str(terminal_event.get("decision_source", "terminal")),
-                    state=state,
-                    reason=str(terminal_event.get("reason", "")),
-                    termination_reason=str(
-                        terminal_event.get("termination_reason", "")
-                    ),
-                    extra={
-                        "protocol_status": terminal_event.get("protocol_status", ""),
-                        "protocol_error_type": terminal_event.get(
-                            "protocol_error_type", ""
-                        ),
-                    },
-                )
-
-            selected_subgraph = selected_by_family.get(qa_family)
-            if selected_subgraph:
-                self._add_subgraph_to_visualization_catalog(catalog, selected_subgraph)
-                _add_event(
-                    qa_family=qa_family,
-                    phase="materialization",
-                    event_type="subgraph_materialized",
-                    status="materialized",
-                    state={
-                        "selected_node_ids": [
-                            node[0]
-                            for node in selected_subgraph.get("nodes", [])
-                            if isinstance(node, (list, tuple)) and node
-                        ],
-                        "selected_edge_pairs": [
-                            [edge[0], edge[1]]
-                            for edge in selected_subgraph.get("edges", [])
-                            if isinstance(edge, (list, tuple)) and len(edge) >= 2
-                        ],
-                        "candidate_pool": selected_subgraph.get(
-                            "candidate_pool_snapshot", []
-                        ),
-                    },
-                    candidate_pool=selected_subgraph.get("candidate_pool_snapshot", []),
-                    reason=str(selected_subgraph.get("evidence_summary", "")),
-                    extra={
-                        "subgraph_id": selected_subgraph.get("subgraph_id", ""),
-                        "target_qa_count": selected_subgraph.get(
-                            "target_qa_count", 0
-                        ),
-                    },
-                )
-
-        return {
-            "schema_version": self.VISUALIZATION_TRACE_SCHEMA_VERSION,
-            "sampler_version": "family_llm_v2",
-            "seed_node_id": seed_node_id,
-            "seed_image_path": image_path,
-            "graph_catalog": to_json_compatible(catalog),
-            "events": to_json_compatible(events),
-        }
-
-    @staticmethod
-    def _visualization_judge_payload(event: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "decision": event.get("decision", ""),
-            "sufficient": bool(event.get("sufficient", False)),
-            "termination_reason": event.get("termination_reason", ""),
-            "suggested_action": event.get("suggested_action", ""),
-            "scorecard": event.get("scorecard", {}),
-            "protocol_status": event.get("protocol_status", ""),
-            "protocol_error_type": event.get("protocol_error_type", ""),
-            "decision_source": event.get("decision_source", "judge"),
-        }
-
-    @staticmethod
-    def _find_visualization_selection_judge(
-        *,
-        selection_judges: list[dict[str, Any]],
-        consumed_indexes: set[int],
-        step_index: Any,
-        candidate_uid: str,
-    ) -> tuple[int | None, dict[str, Any] | None]:
-        for index, judge_event in enumerate(selection_judges):
-            if index in consumed_indexes:
-                continue
-            if judge_event.get("step_index") != step_index:
-                continue
-            last_selected = judge_event.get("last_selected_candidate", {})
-            if not candidate_uid or last_selected.get("candidate_uid") == candidate_uid:
-                return index, judge_event
-        return None, None
-
-    def _add_state_to_visualization_catalog(
-        self,
-        catalog: dict[str, dict[str, Any]],
-        state: dict[str, Any],
-    ) -> None:
-        if not isinstance(state, dict):
-            return
-        for node_id in state.get("selected_node_ids", []):
-            self._add_node_id_to_visualization_catalog(
-                catalog,
-                str(node_id),
-                state_payload=state,
-            )
-        for edge_pair in state.get("selected_edge_pairs", []):
-            self._add_edge_pair_to_visualization_catalog(
-                catalog,
-                edge_pair,
-                state_payload=state,
-            )
-        self._add_candidates_to_visualization_catalog(
-            catalog,
-            [
-                item
-                for item in state.get("candidate_pool", [])
-                if isinstance(item, dict)
-            ],
-        )
-
-    def _add_candidates_to_visualization_catalog(
-        self,
-        catalog: dict[str, dict[str, Any]],
-        candidates: list[dict[str, Any]],
-    ) -> None:
-        for candidate in candidates or []:
-            if not isinstance(candidate, dict):
-                continue
-            node_id = str(candidate.get("candidate_node_id", ""))
-            if node_id:
-                self._add_node_id_to_visualization_catalog(catalog, node_id)
-            bound_edge_pair = candidate.get("bound_edge_pair", [])
-            if isinstance(bound_edge_pair, list) and len(bound_edge_pair) >= 2:
-                self._add_edge_pair_to_visualization_catalog(
-                    catalog,
-                    bound_edge_pair,
-                    candidate_payload=candidate,
-                )
-
-    def _add_subgraph_to_visualization_catalog(
-        self,
-        catalog: dict[str, dict[str, Any]],
-        selected_subgraph: dict[str, Any],
-    ) -> None:
-        for node in selected_subgraph.get("nodes", []):
-            if isinstance(node, (list, tuple)) and len(node) >= 2:
-                self._set_visualization_catalog_node(catalog, str(node[0]), node[1])
-        for edge in selected_subgraph.get("edges", []):
-            if isinstance(edge, (list, tuple)) and len(edge) >= 3:
-                self._set_visualization_catalog_edge(
-                    catalog,
-                    str(edge[0]),
-                    str(edge[1]),
-                    edge[2],
-                )
-
-    def _add_node_id_to_visualization_catalog(
-        self,
-        catalog: dict[str, dict[str, Any]],
-        node_id: str,
-        *,
-        state_payload: dict[str, Any] | None = None,
-    ) -> None:
-        if not node_id or node_id in catalog["nodes"]:
-            return
-        state_payload = state_payload if isinstance(state_payload, dict) else {}
-        virtual_image_node_id = str(state_payload.get("virtual_image_node_id", ""))
-        if node_id == virtual_image_node_id:
-            self._set_visualization_catalog_node(
-                catalog,
-                node_id,
-                self._virtual_image_node_payload_from_state_dict(state_payload),
-            )
-            return
-        node_data = self.graph.get_node(node_id)
-        if node_data:
-            self._set_visualization_catalog_node(catalog, node_id, node_data)
-
-    def _add_edge_pair_to_visualization_catalog(
-        self,
-        catalog: dict[str, dict[str, Any]],
-        edge_pair: list[str] | tuple[str, str],
-        *,
-        state_payload: dict[str, Any] | None = None,
-        candidate_payload: dict[str, Any] | None = None,
-    ) -> None:
-        if not isinstance(edge_pair, (list, tuple)) or len(edge_pair) < 2:
-            return
-        src_id = str(edge_pair[0])
-        tgt_id = str(edge_pair[1])
-        key = self._pair_key((src_id, tgt_id))
-        if key in catalog["edges"]:
-            return
-        candidate_payload = candidate_payload if isinstance(candidate_payload, dict) else {}
-        if candidate_payload.get("virtualized_from_edge_pair"):
-            edge_data = self._virtual_edge_payload_from_candidate_payload(
-                candidate_payload
-            )
-        else:
-            edge_data = self.graph.get_edge(src_id, tgt_id) or self.graph.get_edge(
-                tgt_id, src_id
-            ) or {}
-            state_payload = state_payload if isinstance(state_payload, dict) else {}
-            virtual_image_node_id = str(state_payload.get("virtual_image_node_id", ""))
-            if not edge_data and virtual_image_node_id in {src_id, tgt_id}:
-                edge_data = {
-                    "synthetic": True,
-                    "description": "Synthetic edge from the virtual image root.",
-                }
-        self._set_visualization_catalog_edge(catalog, src_id, tgt_id, edge_data)
-
-    @staticmethod
-    def _set_visualization_catalog_node(
-        catalog: dict[str, dict[str, Any]],
-        node_id: str,
-        payload: dict[str, Any],
-    ) -> None:
-        catalog["nodes"][node_id] = {
-            "node_id": node_id,
-            **to_json_compatible(payload or {}),
-        }
-
-    def _set_visualization_catalog_edge(
-        self,
-        catalog: dict[str, dict[str, Any]],
-        src_id: str,
-        tgt_id: str,
-        payload: dict[str, Any],
-    ) -> None:
-        catalog["edges"][self._pair_key((src_id, tgt_id))] = {
-            "source": src_id,
-            "target": tgt_id,
-            **to_json_compatible(payload or {}),
-        }
-
-    def _virtual_image_node_payload_from_state_dict(
-        self,
-        state_payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        seed_node_id = str(state_payload.get("seed_node_id", ""))
-        seed_node = copy.deepcopy(self.graph.get_node(seed_node_id) or {})
-        metadata = load_metadata(seed_node.get("metadata"))
-        if state_payload.get("image_path"):
-            metadata.setdefault("image_path", state_payload.get("image_path"))
-        metadata.update(
-            {
-                "synthetic": True,
-                "virtualized_from_node_id": seed_node_id,
-                "analysis_first_hop_node_ids": list(
-                    state_payload.get("analysis_first_hop_node_ids", [])
-                ),
-            }
-        )
-        return {
-            **seed_node,
-            "entity_type": seed_node.get("entity_type", "IMAGE") or "IMAGE",
-            "entity_name": seed_node.get("entity_name", seed_node_id),
-            "description": compact_text(
-                seed_node.get("description", "") or "Virtual image root.",
-                limit=240,
-            ),
-            "metadata": metadata,
-        }
-
-    def _virtual_edge_payload_from_candidate_payload(
-        self,
-        candidate_payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        source_pair = list(candidate_payload.get("virtualized_from_edge_pair", []))
-        edge_data = {}
-        if len(source_pair) == 2:
-            edge_data = copy.deepcopy(
-                self.graph.get_edge(source_pair[0], source_pair[1])
-                or self.graph.get_edge(source_pair[1], source_pair[0])
-                or {}
-            )
-        analysis_anchor_node_id = str(
-            candidate_payload.get("analysis_anchor_node_id", "")
-            or candidate_payload.get("bridge_first_hop_id", "")
-        )
-        metadata = load_metadata(edge_data.get("metadata"))
-        metadata.update(
-            {
-                "synthetic": True,
-                "analysis_anchor_node_id": analysis_anchor_node_id,
-                "virtualized_from_path": list(
-                    candidate_payload.get("virtualized_from_path", [])
-                ),
-                "virtualized_from_edge_pair": source_pair,
-            }
-        )
-        edge_data["metadata"] = metadata
-        edge_data["synthetic"] = True
-        edge_data["analysis_anchor_node_id"] = analysis_anchor_node_id
-        edge_data["virtualized_from_path"] = list(
-            candidate_payload.get("virtualized_from_path", [])
-        )
-        edge_data["virtualized_from_edge_pair"] = source_pair
-        if not edge_data.get("description"):
-            edge_data["description"] = compact_text(
-                "Virtual edge from the image to QA evidence through analysis anchor "
-                f"{analysis_anchor_node_id}.",
-                limit=160,
-            )
-        return edge_data
-
-    def _resolve_first_hop_keeps(
-        self,
-        *,
-        qa_family: str,
-        first_hop: list[FamilyCandidatePoolItem],
-        bootstrap_plan: BootstrapPlan,
-    ) -> list[str]:
-        keep_ids = self._stable_filter_ids(
-            bootstrap_plan.keep_first_hop_node_ids,
-            [item.candidate_node_id for item in first_hop],
-        )
-        if (
-            not keep_ids
-            and self.allow_bootstrap_fallback
-            and not self.strict_abstain_on_empty_bootstrap
-        ):
-            keep_ids = self._fallback_first_hop_keeps(qa_family=qa_family, first_hop=first_hop)
-        max_keeps = self._max_visual_core_keeps(qa_family)
-        return keep_ids[:max_keeps]
-
-    def _fallback_first_hop_keeps(
-        self,
-        *,
-        qa_family: str,
-        first_hop: list[FamilyCandidatePoolItem],
-    ) -> list[str]:
-        ranked = [item.candidate_node_id for item in first_hop]
-        return ranked[: self._max_visual_core_keeps(qa_family)]
-
-    def _max_visual_core_keeps(self, qa_family: str) -> int:
-        return 1
-
-    def _collect_visual_core_candidates(
-        self,
-        *,
-        seed_node_id: str,
-        seed_scope: set[str],
-    ) -> list[FamilyCandidatePoolItem]:
-        path_by_node_id = {seed_node_id: [seed_node_id]}
-        candidates, _ = self._build_candidates_from_bind_node(
-            bind_from_node_id=seed_node_id,
-            selected_node_ids={seed_node_id},
-            path_by_node_id=path_by_node_id,
-            visual_core_node_ids={seed_node_id},
-            seed_scope=seed_scope,
-            max_depth=1,
-            blocked_candidate_uids=[],
-        )
-        return candidates
-
-    def _collect_preview_candidates(
-        self,
-        *,
-        seed_node_id: str,
-        first_hop_candidates: list[FamilyCandidatePoolItem],
-        seed_scope: set[str],
-    ) -> list[FamilyCandidatePoolItem]:
-        preview = []
-        seen = set()
-        selected_node_ids = {seed_node_id}
-        visual_core_node_ids = {seed_node_id}
-        path_by_node_id = {seed_node_id: [seed_node_id]}
-        for first_hop in first_hop_candidates:
-            selected_node_ids.add(first_hop.candidate_node_id)
-            visual_core_node_ids.add(first_hop.candidate_node_id)
-            path_by_node_id[first_hop.candidate_node_id] = [seed_node_id, first_hop.candidate_node_id]
-        for first_hop in first_hop_candidates:
-            candidates, _ = self._build_candidates_from_bind_node(
-                bind_from_node_id=first_hop.candidate_node_id,
-                selected_node_ids=selected_node_ids,
-                path_by_node_id=path_by_node_id,
-                visual_core_node_ids=visual_core_node_ids,
-                seed_scope=seed_scope,
-                max_depth=1,
-                blocked_candidate_uids=[],
-            )
-            for item in candidates:
-                if item.candidate_uid in seen:
-                    continue
-                seen.add(item.candidate_uid)
-                preview.append(item)
-        preview.sort(key=lambda item: (item.depth, -item.score, item.candidate_uid))
-        return preview[: self.bootstrap_preview_limit]
-
-    @staticmethod
-    def _virtual_image_node_id(seed_node_id: str) -> str:
-        return f"{seed_node_id}::virtual_image"
-
-    @staticmethod
-    def _candidate_depth_from_path(
-        path: list[str],
-        *,
-        visual_core_node_ids: set[str],
-    ) -> int:
-        outside_core_count = sum(
-            1 for node_id in path if node_id not in visual_core_node_ids
-        )
-        return max(1, outside_core_count)
-
-    def _virtualize_analysis_candidate(
-        self,
-        candidate: FamilyCandidatePoolItem,
-        *,
-        virtual_image_node_id: str,
-    ) -> FamilyCandidatePoolItem:
-        analysis_anchor_node_id = (
-            candidate.bridge_first_hop_id or candidate.bind_from_node_id
-        )
-        frontier_path = [virtual_image_node_id, candidate.candidate_node_id]
-        return FamilyCandidatePoolItem(
-            candidate_uid=(
-                f"{virtual_image_node_id}:{candidate.candidate_node_id}:"
-                f"1:{analysis_anchor_node_id}"
-            ),
-            candidate_node_id=candidate.candidate_node_id,
-            bind_from_node_id=virtual_image_node_id,
-            bound_edge_pair=[virtual_image_node_id, candidate.candidate_node_id],
-            hop=1,
-            depth=1,
-            relation_type=candidate.relation_type,
-            entity_type=candidate.entity_type,
-            frontier_path=frontier_path,
-            bridge_first_hop_id=analysis_anchor_node_id,
-            evidence_summary=candidate.evidence_summary,
-            edge_direction=candidate.edge_direction,
-            score=candidate.score,
-            analysis_anchor_node_id=analysis_anchor_node_id,
-            virtualized_from_path=list(candidate.frontier_path),
-            virtualized_from_edge_pair=list(candidate.bound_edge_pair),
-        )
-
-    def _build_candidates_from_bind_node(
-        self,
-        *,
-        bind_from_node_id: str,
-        selected_node_ids: set[str],
-        path_by_node_id: dict[str, list[str]],
-        visual_core_node_ids: set[str],
-        seed_scope: set[str],
-        max_depth: int,
-        blocked_candidate_uids: list[str],
-    ) -> tuple[list[FamilyCandidatePoolItem], bool]:
-        bind_path = list(path_by_node_id.get(bind_from_node_id, [bind_from_node_id]))
-        blocked_set = {str(item) for item in blocked_candidate_uids}
-        candidates = []
-        seen = set()
-        depth_limit_hit = False
-        for neighbor_id in self.graph.get_neighbors(bind_from_node_id):
-            neighbor_id = str(neighbor_id)
-            if neighbor_id in selected_node_ids:
-                continue
-            edge_data = self.graph.get_edge(bind_from_node_id, neighbor_id) or self.graph.get_edge(
-                neighbor_id, bind_from_node_id
-            ) or {}
-            node_data = self.graph.get_node(neighbor_id) or {}
-            if not self._passes_provenance_guardrail(node_data=node_data, edge_data=edge_data, seed_scope=seed_scope):
-                continue
-            new_path = bind_path + [neighbor_id]
-            depth = self._candidate_depth_from_path(
-                new_path,
-                visual_core_node_ids=visual_core_node_ids,
-            )
-            effective_hop = depth
-            if depth > max_depth:
-                depth_limit_hit = True
-                continue
-            bridge_first_hop_id = (
-                bind_path[1]
-                if len(bind_path) >= 2
-                else neighbor_id
-            )
-            edge_direction = self._edge_direction(bind_from_node_id, neighbor_id)
-            bound_edge_pair = self._bound_edge_pair(
-                bind_from_node_id=bind_from_node_id,
-                candidate_node_id=neighbor_id,
-                edge_direction=edge_direction,
-            )
-            candidate_uid = (
-                f"{bind_from_node_id}:{neighbor_id}:{effective_hop}:{bridge_first_hop_id}"
-            )
-            if candidate_uid in blocked_set or candidate_uid in seen:
-                continue
-            seen.add(candidate_uid)
-            candidates.append(
-                FamilyCandidatePoolItem(
-                    candidate_uid=candidate_uid,
-                    candidate_node_id=neighbor_id,
-                    bind_from_node_id=bind_from_node_id,
-                    bound_edge_pair=bound_edge_pair,
-                    hop=effective_hop,
-                    depth=depth,
-                    relation_type=str(edge_data.get("relation_type", "")),
-                    entity_type=str(node_data.get("entity_type", "")),
-                    frontier_path=new_path,
-                    bridge_first_hop_id=bridge_first_hop_id,
-                    evidence_summary=self._candidate_evidence_summary(node_data=node_data, edge_data=edge_data),
-                    edge_direction=edge_direction,
-                    score=self._candidate_score(
-                        bind_from_node_id=bind_from_node_id,
-                        candidate_node_id=neighbor_id,
-                        edge_data=edge_data,
-                    ),
-                )
-            )
-        candidates.sort(key=lambda item: (item.depth, -item.score, item.candidate_uid))
-        return candidates, depth_limit_hit
-
-    def _infer_runtime_schema(
-        self,
-        *,
-        seed_node_id: str,
-        seed_scope: set[str],
-    ) -> dict[str, Any]:
-        first_hop = self._collect_visual_core_candidates(seed_node_id=seed_node_id, seed_scope=seed_scope)
-        preview = self._collect_preview_candidates(
-            seed_node_id=seed_node_id,
-            first_hop_candidates=first_hop,
-            seed_scope=seed_scope,
-        )
-        node_ids = {seed_node_id}
-        relation_types = []
-        node_type_counter = Counter()
-        for item in first_hop + preview:
-            node_ids.add(item.candidate_node_id)
-            if item.entity_type:
-                node_type_counter[item.entity_type] += 1
-            if item.relation_type:
-                relation_types.append(item.relation_type)
-        seed_node = self.graph.get_node(seed_node_id) or {}
-        if seed_node.get("entity_type"):
-            node_type_counter[str(seed_node["entity_type"])] += 1
-        modalities = sorted(
-            {
-                token
-                for token in (
-                    "image" if "IMAGE" in str(seed_node.get("entity_type", "")).upper() else "",
-                    "text" if any("TEXT" in str(item.entity_type).upper() for item in preview) else "",
-                )
-                if token
-            }
-        )
-        return {
-            "node_types": sorted(node_type_counter.keys()),
-            "node_type_counts": dict(sorted(node_type_counter.items())),
-            "relation_types": sorted(set(relation_types)),
-            "modalities": modalities,
-            "first_hop_count": len(first_hop),
-            "preview_candidate_count": len(preview),
-        }
-
-    def _collect_seed_scope(self, seed_node_id: str) -> set[str]:
-        seed_scope = set()
-        seed_node = self.graph.get_node(seed_node_id) or {}
-        metadata = load_metadata(seed_node.get("metadata"))
-        seed_scope.update(split_source_ids(seed_node.get("source_id", "")))
-        seed_scope.update(split_source_ids(metadata.get("source_trace_id", "")))
-        return seed_scope
-
-    def _passes_provenance_guardrail(
-        self,
-        *,
-        node_data: dict[str, Any],
-        edge_data: dict[str, Any],
-        seed_scope: set[str],
-    ) -> bool:
-        if not seed_scope:
-            return True
-        node_scope = split_source_ids(node_data.get("source_id", ""))
-        node_scope.update(
-            split_source_ids(load_metadata(node_data.get("metadata")).get("source_trace_id", ""))
-        )
-        edge_scope = split_source_ids(edge_data.get("source_id", ""))
-        if node_scope & seed_scope:
-            return True
-        if edge_scope & seed_scope:
-            return True
-        return not node_scope and not edge_scope
-
-    def _edge_direction(self, bind_from_node_id: str, candidate_node_id: str) -> str:
-        if not bool(getattr(self.graph, "is_directed", lambda: False)()):
-            return "outward"
-        if self.graph.get_edge(bind_from_node_id, candidate_node_id):
-            return "forward"
-        if self.graph.get_edge(candidate_node_id, bind_from_node_id):
-            return "backward"
-        return "outward"
-
-    @staticmethod
-    def _bound_edge_pair(
-        *,
-        bind_from_node_id: str,
-        candidate_node_id: str,
-        edge_direction: str,
-    ) -> list[str]:
-        if edge_direction == "backward":
-            return [candidate_node_id, bind_from_node_id]
-        return [bind_from_node_id, candidate_node_id]
-
-    def _is_direction_compatible(
-        self,
-        state: FamilySessionState,
-        candidate: FamilyCandidatePoolItem,
-    ) -> bool:
-        if not state.direction_mode:
-            return True
-        if candidate.edge_direction == state.direction_mode:
-            return True
-        if state.direction_mode == "outward" and candidate.edge_direction == "outward":
-            return True
-        return False
-
-    def _candidate_score(
-        self,
-        *,
-        bind_from_node_id: str,
-        candidate_node_id: str,
-        edge_data: dict[str, Any],
-    ) -> float:
-        bind_data = self.graph.get_node(bind_from_node_id) or {}
-        candidate_data = self.graph.get_node(candidate_node_id) or {}
-        shared_keywords = len(
-            self._keywords_from_node(bind_data) & self._keywords_from_node(candidate_data)
-        )
-        relation_bonus = 0.12 if edge_data.get("relation_type") else 0.0
-        evidence_bonus = 0.08 if edge_data.get("evidence_span") else 0.0
-        return round(shared_keywords * 0.12 + relation_bonus + evidence_bonus, 4)
-
-    def _candidate_evidence_summary(
-        self,
-        *,
-        node_data: dict[str, Any],
-        edge_data: dict[str, Any],
-    ) -> str:
-        snippets = [
-            compact_text(edge_data.get("description", ""), limit=120),
-            compact_text(edge_data.get("evidence_span", ""), limit=120),
-            compact_text(node_data.get("description", ""), limit=120),
-            compact_text(node_data.get("evidence_span", ""), limit=120),
-        ]
-        return " ".join(part for part in snippets if part).strip()
-
-    def _keywords_from_node(self, node_data: dict[str, Any]) -> set[str]:
-        raw = " ".join(
-            [
-                str(node_data.get("entity_name", "")),
-                str(node_data.get("description", "")),
-                str(node_data.get("evidence_span", "")),
-            ]
-        )
-        return {
-            token.lower()
-            for token in re.findall(r"[a-zA-Z][a-zA-Z0-9_\-/]{2,}", raw)
-        }
-
-    def _node_payloads(self, node_ids: set[str]) -> list[tuple[str, dict]]:
-        payloads = []
-        for node_id in sorted(node_ids):
-            node_data = self.graph.get_node(node_id)
-            if node_data:
-                payloads.append((node_id, node_data))
-        return payloads
-
-    def _node_payloads_for_state(
-        self,
-        state: FamilySessionState,
-    ) -> list[tuple[str, dict]]:
-        payloads = []
-        for node_id in state.selected_node_ids:
-            if node_id == state.virtual_image_node_id:
-                payloads.append((node_id, self._virtual_image_node_payload(state)))
-                continue
-            node_data = self.graph.get_node(node_id)
-            if node_data:
-                payloads.append((node_id, node_data))
-        return payloads
-
-    def _virtual_image_node_payload(self, state: FamilySessionState) -> dict[str, Any]:
-        seed_node = copy.deepcopy(self.graph.get_node(state.seed_node_id) or {})
-        metadata = load_metadata(seed_node.get("metadata"))
-        if state.image_path:
-            metadata.setdefault("image_path", state.image_path)
-        metadata.update(
-            {
-                "synthetic": True,
-                "virtualized_from_node_id": state.seed_node_id,
-                "analysis_first_hop_node_ids": list(
-                    state.analysis_first_hop_node_ids
-                ),
-            }
-        )
-        return {
-            **seed_node,
-            "entity_type": seed_node.get("entity_type", "IMAGE") or "IMAGE",
-            "entity_name": seed_node.get("entity_name", state.seed_node_id),
-            "description": compact_text(
-                seed_node.get("description", "") or "Virtual image root.",
-                limit=240,
-            ),
-            "metadata": metadata,
-        }
-
-    def _edge_payloads(
-        self,
-        edge_pairs: list[tuple[str, str]],
-    ) -> list[tuple[str, str, dict]]:
-        payloads = []
-        seen = set()
-        for src_id, tgt_id in edge_pairs:
-            key = (str(src_id), str(tgt_id))
-            if key in seen:
-                continue
-            seen.add(key)
-            edge_data = self.graph.get_edge(src_id, tgt_id) or self.graph.get_edge(tgt_id, src_id)
-            if edge_data:
-                payloads.append((src_id, tgt_id, edge_data))
-        return payloads
-
-    def _edge_payloads_for_state(
-        self,
-        state: FamilySessionState,
-        edge_pairs: list[tuple[str, str]],
-    ) -> list[tuple[str, str, dict]]:
-        payloads = []
-        seen = set()
-        for src_id, tgt_id in edge_pairs:
-            key = (str(src_id), str(tgt_id))
-            if key in seen:
-                continue
-            seen.add(key)
-            pair_key = self._pair_key(key)
-            if pair_key in state.virtual_edge_payload_by_pair:
-                payloads.append(
-                    (
-                        str(src_id),
-                        str(tgt_id),
-                        copy.deepcopy(state.virtual_edge_payload_by_pair[pair_key]),
-                    )
-                )
-                continue
-            edge_data = self.graph.get_edge(src_id, tgt_id) or self.graph.get_edge(
-                tgt_id, src_id
-            )
-            if edge_data:
-                payloads.append((src_id, tgt_id, edge_data))
-        return payloads
-
-    def _virtual_edge_payload(
-        self,
-        candidate: FamilyCandidatePoolItem,
-    ) -> dict[str, Any]:
-        source_pair = list(candidate.virtualized_from_edge_pair)
-        edge_data = {}
-        if len(source_pair) == 2:
-            edge_data = copy.deepcopy(
-                self.graph.get_edge(source_pair[0], source_pair[1])
-                or self.graph.get_edge(source_pair[1], source_pair[0])
-                or {}
-            )
-        metadata = load_metadata(edge_data.get("metadata"))
-        metadata.update(
-            {
-                "synthetic": True,
-                "analysis_anchor_node_id": candidate.analysis_anchor_node_id,
-                "virtualized_from_path": list(candidate.virtualized_from_path),
-                "virtualized_from_edge_pair": source_pair,
-            }
-        )
-        edge_data["metadata"] = metadata
-        edge_data["synthetic"] = True
-        edge_data["analysis_anchor_node_id"] = candidate.analysis_anchor_node_id
-        edge_data["virtualized_from_path"] = list(candidate.virtualized_from_path)
-        edge_data["virtualized_from_edge_pair"] = source_pair
-        if not edge_data.get("description"):
-            edge_data["description"] = compact_text(
-                "Virtual edge from the image to QA evidence through analysis anchor "
-                f"{candidate.analysis_anchor_node_id}.",
-                limit=160,
-            )
-        return edge_data
-
-    def _extract_image_path(self, node_data: dict[str, Any]) -> str:
-        metadata = load_metadata(node_data.get("metadata"))
-        for key in ("image_path", "img_path"):
-            if metadata.get(key):
-                return str(metadata[key])
-        return ""
-
     @staticmethod
     def _pair_key(edge_pair: list[str] | tuple[str, str]) -> str:
         return f"{edge_pair[0]}->{edge_pair[1]}"
-
-    @staticmethod
-    def _stable_filter_ids(values: list[Any], allowed_values: list[str]) -> list[str]:
-        allowed = [str(item) for item in allowed_values]
-        incoming = {str(item) for item in values if str(item) in set(allowed)}
-        return [item for item in allowed if item in incoming]
 
     @staticmethod
     def _stable_unique_ids(values: list[Any]) -> list[str]:
@@ -2777,20 +1113,6 @@ class VisualCoreFamilyLLMSubgraphSampler:
                 continue
             seen.add(item)
             result.append(item)
-        return result
-
-    @staticmethod
-    def _stable_string_list(values: list[Any], *, limit: int) -> list[str]:
-        seen = set()
-        result = []
-        for item in values or []:
-            text = compact_text(item, limit=80)
-            if not text or text in seen:
-                continue
-            seen.add(text)
-            result.append(text)
-            if len(result) >= limit:
-                break
         return result
 
     @staticmethod

@@ -26,7 +26,6 @@ class SampleSubgraphFamilyLLMService(BaseOperator):
         max_selector_errors: int = 2,
         max_judge_errors: int = 1,
         min_multi_hop_outside_core_edges: int = 2,
-        strict_abstain_on_empty_bootstrap: bool = True,
     ):
         super().__init__(
             working_dir=working_dir,
@@ -58,7 +57,6 @@ class SampleSubgraphFamilyLLMService(BaseOperator):
             max_selector_errors=max_selector_errors,
             max_judge_errors=max_judge_errors,
             min_multi_hop_outside_core_edges=min_multi_hop_outside_core_edges,
-            strict_abstain_on_empty_bootstrap=strict_abstain_on_empty_bootstrap,
         )
 
     def process(self, batch: list) -> Tuple[list, dict]:

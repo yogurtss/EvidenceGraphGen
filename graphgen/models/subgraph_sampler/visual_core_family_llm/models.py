@@ -48,12 +48,7 @@ class BootstrapPlan:
     qa_family: str
     intent: str = ""
     technical_focus: str = ""
-    keep_first_hop_node_ids: list[str] = field(default_factory=list)
-    drop_first_hop_node_ids: list[str] = field(default_factory=list)
-    preferred_entity_types: list[str] = field(default_factory=list)
-    preferred_relation_types: list[str] = field(default_factory=list)
     forbidden_patterns: list[str] = field(default_factory=list)
-    target_reasoning_depth: int = 1
     image_grounding_summary: str = ""
     bootstrap_rationale: str = ""
 
@@ -97,13 +92,9 @@ class FamilySessionState:
     technical_focus: str = ""
     image_grounding_summary: str = ""
     bootstrap_rationale: str = ""
-    target_reasoning_depth: int = 1
-    preferred_entity_types: list[str] = field(default_factory=list)
-    preferred_relation_types: list[str] = field(default_factory=list)
     forbidden_patterns: list[str] = field(default_factory=list)
     visual_core_node_ids: list[str] = field(default_factory=list)
     analysis_first_hop_node_ids: list[str] = field(default_factory=list)
-    dropped_analysis_first_hop_node_ids: list[str] = field(default_factory=list)
     analysis_only_node_ids: list[str] = field(default_factory=list)
     selected_node_ids: list[str] = field(default_factory=list)
     selected_edge_pairs: list[list[str]] = field(default_factory=list)
@@ -134,13 +125,9 @@ class FamilySessionState:
             "technical_focus": self.technical_focus,
             "image_grounding_summary": self.image_grounding_summary,
             "bootstrap_rationale": self.bootstrap_rationale,
-            "target_reasoning_depth": self.target_reasoning_depth,
-            "preferred_entity_types": list(self.preferred_entity_types),
-            "preferred_relation_types": list(self.preferred_relation_types),
             "forbidden_patterns": list(self.forbidden_patterns),
             "visual_core_node_ids": list(self.visual_core_node_ids),
             "analysis_first_hop_node_ids": list(self.analysis_first_hop_node_ids),
-            "dropped_analysis_first_hop_node_ids": list(self.dropped_analysis_first_hop_node_ids),
             "analysis_only_node_ids": list(self.analysis_only_node_ids),
             "selected_node_ids": list(self.selected_node_ids),
             "selected_evidence_node_ids": [

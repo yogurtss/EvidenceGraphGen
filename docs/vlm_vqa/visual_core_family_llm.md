@@ -1,14 +1,6 @@
-# Family-Decoupled VQA Subgraph Agents
+# Visual-Core Family LLM Subgraph Sampler
 
-当前有两条 family VQA 路径：
-
-```text
-build_grounded_tree_kg
--> sample_subgraph_family
--> generate_agentic_vqa
-```
-
-这条是旧的 family-agent 路径，主要实现位于 `graphgen/models/subgraph_sampler/family_agents/`，会让 family agent 和 QA judge 做更多回调式协作。
+当前保留的 family VQA 路径是：
 
 ```text
 build_grounded_tree_kg
@@ -16,7 +8,7 @@ build_grounded_tree_kg
 -> generate(method=auto)
 ```
 
-这条是当前推荐的 LLM visual-core 路径，主实现位于 `graphgen/models/subgraph_sampler/visual_core_family_llm/sampler.py`（兼容导出保留在 `graphgen/models/subgraph_sampler/visual_core_family_llm_sampler.py`）。它把子图构造拆成 bootstrap、selector、termination judge 和代码侧 postcheck，输出 `family_llm_v2` 子图，再交给 `generate(method=auto)` 按 `qa_family` 生成 QA。
+主实现位于 `graphgen/models/subgraph_sampler/visual_core_family_llm/sampler.py`（兼容导出保留在 `graphgen/models/subgraph_sampler/visual_core_family_llm_sampler.py`）。它把子图构造拆成 bootstrap、selector、termination judge 和代码侧 postcheck，输出 `family_llm_v2` 子图，再交给 `generate(method=auto)` 按 `qa_family` 生成 QA。
 
 ## 当前流程
 
@@ -97,7 +89,6 @@ image seed
 - `edges`
 - `visual_core_node_ids`
 - `analysis_first_hop_node_ids`
-- `dropped_analysis_first_hop_node_ids`
 - `analysis_only_node_ids`
 - `selected_evidence_node_ids`
 - `original_seed_node_id`
@@ -125,7 +116,6 @@ image seed
 主要配置文件：
 
 - `examples/generate/generate_vqa/agentic_family_llm_vqa_config.yaml`
-- `examples/generate/generate_vqa/agentic_family_vqa_config.yaml`
 
 `sample_subgraph_family_llm` 常用参数：
 
@@ -141,7 +131,6 @@ image seed
 - `max_selector_errors`
 - `max_judge_errors`
 - `min_multi_hop_outside_core_edges`
-- `strict_abstain_on_empty_bootstrap`
 
 ## 当前已知风险
 

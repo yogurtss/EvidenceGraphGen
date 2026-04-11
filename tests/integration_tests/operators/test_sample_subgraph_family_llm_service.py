@@ -74,12 +74,7 @@ class _DummyVisualCoreLLM:
                 {
                     "intent": "Read the highlighted timing metric",
                     "technical_focus": "timing",
-                    "keep_first_hop_node_ids": ["latency_metric"],
-                    "drop_first_hop_node_ids": ["voltage_metric", "decoder_logic"],
-                    "preferred_entity_types": ["METRIC"],
-                    "preferred_relation_types": ["shows_metric"],
                     "forbidden_patterns": ["decoder"],
-                    "target_reasoning_depth": 1,
                     "image_grounding_summary": "The figure grounds the direct timing metric.",
                     "bootstrap_rationale": "Keep one direct visual metric and stop after the visual core.",
                 }
@@ -89,12 +84,7 @@ class _DummyVisualCoreLLM:
                 {
                     "intent": "Explain the timing topic around the highlighted figure",
                     "technical_focus": "timing",
-                    "keep_first_hop_node_ids": ["latency_metric"],
-                    "drop_first_hop_node_ids": ["voltage_metric", "decoder_logic"],
-                    "preferred_entity_types": ["METRIC", "CONCEPT"],
-                    "preferred_relation_types": ["shows_metric", "constrains"],
                     "forbidden_patterns": ["decoder"],
-                    "target_reasoning_depth": 2,
                     "image_grounding_summary": "The image anchors the timing metric cluster.",
                     "bootstrap_rationale": "Keep the timing-related first-hop nodes and expand toward coherent timing evidence.",
                 }
@@ -103,12 +93,7 @@ class _DummyVisualCoreLLM:
             {
                 "intent": "Trace the timing consequence beyond the visual core",
                 "technical_focus": "timing",
-                "keep_first_hop_node_ids": ["latency_metric"],
-                "drop_first_hop_node_ids": ["voltage_metric", "decoder_logic"],
-                "preferred_entity_types": ["METRIC", "CONCEPT", "PERFORMANCE"],
-                "preferred_relation_types": ["shows_metric", "constrains", "impacts"],
                 "forbidden_patterns": ["decoder"],
-                "target_reasoning_depth": 3,
                 "image_grounding_summary": "The image anchors the timing chain at latency_metric.",
                 "bootstrap_rationale": "Start from latency_metric and follow one causal chain outward.",
             }
@@ -116,16 +101,12 @@ class _DummyVisualCoreLLM:
 
     def _selector_response(self, prompt: str) -> str:
         family = self._extract_family(prompt)
-        state = self._extract_json_between(prompt, "Current state:\n", "\nCandidate pool:\n")
-        candidate_pool = self._extract_json_after(prompt, "Candidate pool:\n")
+        state = self._extract_json_between(prompt, "Current state:\n", "\nCandidate lines:\n")
+        candidate_lines = self._extract_json_after(prompt, "Candidate lines:\n")
         self.selector_calls[family] = self.selector_calls.get(family, 0) + 1
         if family == "aggregated":
             target = "row_activation" if "row_activation" not in state.get("selected_node_ids", []) else "random_access_perf"
-            candidate_uid = next(
-                item["candidate_uid"]
-                for item in candidate_pool
-                if item["candidate_node_id"] == target
-            )
+            candidate_uid = self._candidate_uid_for_node(candidate_lines, target)
             return json.dumps(
                 {
                     "decision": "select_candidate",
@@ -141,11 +122,7 @@ class _DummyVisualCoreLLM:
                 target = "row_activation"
             else:
                 target = "random_access_perf"
-            candidate_uid = next(
-                item["candidate_uid"]
-                for item in candidate_pool
-                if item["candidate_node_id"] == target
-            )
+            candidate_uid = self._candidate_uid_for_node(candidate_lines, target)
             return json.dumps(
                 {
                     "decision": "select_candidate",
@@ -155,11 +132,7 @@ class _DummyVisualCoreLLM:
                 }
             )
         if family == "atomic":
-            candidate_uid = next(
-                item["candidate_uid"]
-                for item in candidate_pool
-                if item["candidate_node_id"] == "row_activation"
-            )
+            candidate_uid = self._candidate_uid_for_node(candidate_lines, "row_activation")
             return json.dumps(
                 {
                     "decision": "select_candidate",
@@ -237,6 +210,11 @@ class _DummyVisualCoreLLM:
     def _extract_json_after(prompt: str, start_marker: str):
         return json.loads(prompt.split(start_marker, 1)[1])
 
+    @staticmethod
+    def _candidate_uid_for_node(candidate_lines: list[str], node_id: str) -> str:
+        marker = f"node={node_id} |"
+        return next(line.split(" | ", 1)[0] for line in candidate_lines if marker in line)
+
 
 class _EmptyBootstrapLLM(_DummyVisualCoreLLM):
     async def generate_answer(self, prompt: str, history=None, **extra):
@@ -300,12 +278,8 @@ class _ShallowMultiHopAcceptLLM(_DummyVisualCoreLLM):
         family = self._extract_family(prompt)
         if family != "multi_hop":
             return super()._selector_response(prompt)
-        candidate_pool = self._extract_json_after(prompt, "Candidate pool:\n")
-        candidate_uid = next(
-            item["candidate_uid"]
-            for item in candidate_pool
-            if item["candidate_node_id"] == "row_activation"
-        )
+        candidate_lines = self._extract_json_after(prompt, "Candidate lines:\n")
+        candidate_uid = self._candidate_uid_for_node(candidate_lines, "row_activation")
         return json.dumps(
             {
                 "decision": "select_candidate",
@@ -358,12 +332,8 @@ class _ChaoticVisualCoreLLM(_DummyVisualCoreLLM):
                 }
             )
         if family == "multi_hop":
-            candidate_pool = self._extract_json_after(prompt, "Candidate pool:\n")
-            candidate_uid = next(
-                item["candidate_uid"]
-                for item in candidate_pool
-                if item["candidate_node_id"] == "row_activation"
-            )
+            candidate_lines = self._extract_json_after(prompt, "Candidate lines:\n")
+            candidate_uid = self._candidate_uid_for_node(candidate_lines, "row_activation")
             return json.dumps(
                 {
                     "decision": "select_candidate",
@@ -475,6 +445,59 @@ def _build_visual_core_graph(storage: NetworkXStorage):
     storage.index_done_callback()
 
 
+def _build_first_hop_only_graph(storage: NetworkXStorage):
+    Path(storage.working_dir).mkdir(parents=True, exist_ok=True)
+    nodes = {
+        "image_seed": {
+            "entity_type": "IMAGE",
+            "entity_name": "image_seed",
+            "description": "Timing figure with only image-adjacent metric labels.",
+            "metadata": '{"image_path":"figures/first-hop-only.png","source_trace_id":"doc2-image"}',
+            "source_id": "doc2-image<SEP>doc2-text",
+            "evidence_span": "Figure 2 highlights local timing labels.",
+        },
+        "latency_metric": {
+            "entity_type": "METRIC",
+            "entity_name": "latency_metric",
+            "description": "Latency metric shown directly in the image.",
+            "source_id": "doc2-text",
+            "evidence_span": "latency metric shown directly in the image",
+        },
+        "voltage_metric": {
+            "entity_type": "METRIC",
+            "entity_name": "voltage_metric",
+            "description": "Voltage metric shown directly in the image.",
+            "source_id": "doc2-text",
+            "evidence_span": "voltage metric shown directly in the image",
+        },
+    }
+    edges = [
+        (
+            "image_seed",
+            "latency_metric",
+            {
+                "relation_type": "shows_metric",
+                "source_id": "doc2-image",
+                "metadata": '{"source_trace_id":"doc2-image"}',
+            },
+        ),
+        (
+            "image_seed",
+            "voltage_metric",
+            {
+                "relation_type": "shows_metric",
+                "source_id": "doc2-image",
+                "metadata": '{"source_trace_id":"doc2-image"}',
+            },
+        ),
+    ]
+    for node_id, node_data in nodes.items():
+        storage.upsert_node(node_id, node_data)
+    for src_id, tgt_id, edge_data in edges:
+        storage.upsert_edge(src_id, tgt_id, edge_data)
+    storage.index_done_callback()
+
+
 def test_sample_subgraph_family_llm_bootstraps_visual_core_and_updates_candidates(
     tmp_path: Path,
 ):
@@ -517,21 +540,33 @@ def test_sample_subgraph_family_llm_bootstraps_visual_core_and_updates_candidate
         item["qa_family"]: item for item in result["family_bootstrap_trace"]
     }
     aggregated_bootstrap = bootstrap_by_family["aggregated"]
-    assert aggregated_bootstrap["kept_first_hop_node_ids"] == ["latency_metric"]
-    assert "decoder_logic" in aggregated_bootstrap["dropped_first_hop_node_ids"]
-
-    aggregated_bootstrap_state = next(
-        item
-        for item in result["family_termination_trace"]
-        if item["qa_family"] == "aggregated" and item["stage"] == "bootstrap"
-    )["state"]
-    aggregated_bootstrap_candidates = {
+    assert aggregated_bootstrap["analysis_first_hop_node_ids"] == [
+        "latency_metric",
+        "voltage_metric",
+        "decoder_logic",
+    ]
+    assert {
         candidate["candidate_node_id"]
-        for candidate in aggregated_bootstrap_state["candidate_pool"]
+        for candidate in aggregated_bootstrap["preview_candidates"]
+    } >= {"row_activation", "timing_window", "bank_conflict", "voltage_guard", "decoder_lane"}
+
+    aggregated_first_step = next(
+        item
+        for item in result["family_selection_trace"]
+        if item["qa_family"] == "aggregated"
+        and item.get("candidate_node_id") == "row_activation"
+    )
+    aggregated_first_step_candidates = {
+        candidate["candidate_node_id"]
+        for candidate in aggregated_first_step["candidate_pool_after_step"]
     }
-    assert "decoder_lane" not in aggregated_bootstrap_candidates
-    assert {"row_activation", "timing_window", "bank_conflict"} <= aggregated_bootstrap_candidates
-    assert "voltage_guard" not in aggregated_bootstrap_candidates
+    assert "decoder_lane" not in aggregated_first_step_candidates
+    assert {
+        "timing_window",
+        "bank_conflict",
+        "voltage_guard",
+        "random_access_perf",
+    } <= aggregated_first_step_candidates
 
     selected_by_family = {
         item["qa_family"]: item for item in result["selected_subgraphs"]
@@ -543,7 +578,11 @@ def test_sample_subgraph_family_llm_bootstraps_visual_core_and_updates_candidate
         "row_activation",
     }
     assert atomic["visual_core_node_ids"] == ["image_seed::virtual_image"]
-    assert atomic["analysis_first_hop_node_ids"] == ["latency_metric"]
+    assert atomic["analysis_first_hop_node_ids"] == [
+        "latency_metric",
+        "voltage_metric",
+        "decoder_logic",
+    ]
     assert atomic["analysis_only_node_ids"] == [
         "image_seed",
         "latency_metric",
@@ -570,12 +609,16 @@ def test_sample_subgraph_family_llm_bootstraps_visual_core_and_updates_candidate
     assert {"image_seed::virtual_image", "row_activation", "random_access_perf"} <= aggregated_nodes
     assert not {"image_seed", "latency_metric", "voltage_metric"} & aggregated_nodes
     assert aggregated["visual_core_node_ids"] == ["image_seed::virtual_image"]
-    assert aggregated["analysis_first_hop_node_ids"] == ["latency_metric"]
+    assert aggregated["analysis_first_hop_node_ids"] == [
+        "latency_metric",
+        "voltage_metric",
+        "decoder_logic",
+    ]
     assert aggregated["direction_mode"] == "outward"
     assert aggregated["direction_anchor_edge"] == ["image_seed::virtual_image", "row_activation"]
     assert {
         candidate["candidate_node_id"] for candidate in aggregated["candidate_pool_snapshot"]
-    } == {"timing_window"}
+    } == set()
     assert aggregated["target_qa_count"] == 2
 
     aggregated_deeper_step = next(
@@ -587,7 +630,7 @@ def test_sample_subgraph_family_llm_bootstraps_visual_core_and_updates_candidate
     assert {
         candidate["candidate_node_id"]
         for candidate in aggregated_deeper_step["candidate_pool_after_step"]
-    } == {"timing_window"}
+    } == set()
 
     multi_hop = selected_by_family["multi_hop"]
     multi_hop_nodes = {node[0] for node in multi_hop["nodes"]}
@@ -606,9 +649,10 @@ def test_sample_subgraph_family_llm_bootstraps_visual_core_and_updates_candidate
         if item["qa_family"] == "multi_hop"
         and item.get("candidate_node_id") == "row_activation"
     )
-    assert [candidate["candidate_node_id"] for candidate in multi_hop_chain_step["candidate_pool_after_step"]] == [
-        "random_access_perf"
-    ]
+    assert {
+        candidate["candidate_node_id"]
+        for candidate in multi_hop_chain_step["candidate_pool_after_step"]
+    } == {"timing_window", "voltage_guard", "random_access_perf"}
 
     visualization_trace = result["visualization_trace"]
     assert visualization_trace["schema_version"] == "visual_core_family_timeline_v1"
@@ -646,7 +690,7 @@ def test_sample_subgraph_family_llm_bootstraps_visual_core_and_updates_candidate
     assert {
         candidate["candidate_node_id"]
         for candidate in aggregated_pool_event["candidate_pool"]
-    } == {"timing_window"}
+    } == set()
 
     rollback_event = next(
         event
@@ -760,6 +804,109 @@ def test_generate_service_prefers_target_qa_count_for_family_llm_subgraphs(
     assert qa_family_counts == {"atomic": 1, "aggregated": 2, "multi_hop": 1}
 
 
+def test_family_llm_sampler_atomic_falls_back_to_first_hop_without_second_hop(
+    tmp_path: Path,
+):
+    graph_storage = NetworkXStorage(working_dir=str(tmp_path / "cache"), namespace="graph")
+    _build_first_hop_only_graph(graph_storage)
+    llm = _DummyVisualCoreLLM()
+
+    def _init_storage(backend: str, working_dir: str, namespace: str):
+        if namespace == "graph":
+            return graph_storage
+        return _DummyKV()
+
+    with patch(
+        "graphgen.operators.sample_subgraph_family_llm.sample_subgraph_family_llm_service.init_storage",
+        side_effect=_init_storage,
+    ), patch(
+        "graphgen.operators.sample_subgraph_family_llm.sample_subgraph_family_llm_service.init_llm",
+        return_value=llm,
+    ):
+        service = SampleSubgraphFamilyLLMService(
+            working_dir=str(tmp_path / "cache"),
+            kv_backend="json_kv",
+            graph_backend="networkx",
+            max_steps_per_family=3,
+        )
+
+    rows, _ = service.process([{"_trace_id": "first-hop-only"}])
+    result = rows[0]
+    selected_by_family = {
+        item["qa_family"]: item for item in result["selected_subgraphs"]
+    }
+    assert set(selected_by_family) == {"atomic"}
+
+    atomic = selected_by_family["atomic"]
+    selected_node_ids = {node[0] for node in atomic["nodes"]}
+    assert "image_seed::virtual_image" in selected_node_ids
+    selected_first_hop = next(
+        node_id for node_id in selected_node_ids if node_id != "image_seed::virtual_image"
+    )
+    assert selected_first_hop in {"latency_metric", "voltage_metric"}
+
+    assert atomic["selected_evidence_node_ids"] == [selected_first_hop]
+    assert atomic["visual_core_node_ids"] == ["image_seed::virtual_image"]
+    assert atomic["analysis_first_hop_node_ids"] == [
+        "latency_metric",
+        "voltage_metric",
+    ]
+    assert atomic["target_qa_count"] == 1
+
+    fallback_edges = [
+        edge
+        for edge in atomic["edges"]
+        if edge[0] == "image_seed::virtual_image" and edge[1] == selected_first_hop
+    ]
+    assert len(fallback_edges) == 1
+    assert fallback_edges[0][2]["synthetic"] is True
+    assert fallback_edges[0][2]["fallback"] == "atomic_first_hop"
+    assert fallback_edges[0][2]["virtualized_from_edge_pair"] == [
+        "image_seed",
+        selected_first_hop,
+    ]
+    assert fallback_edges[0][2]["metadata"]["source_trace_id"] == "doc2-image"
+
+    sessions = {item["qa_family"]: item for item in result["family_sessions"]}
+    assert sessions["atomic"]["status"] == "accepted"
+    assert sessions["atomic"]["termination_reason"] == "atomic_first_hop_fallback"
+    assert sessions["aggregated"]["termination_reason"] == "candidate_pool_exhausted"
+    assert sessions["multi_hop"]["termination_reason"] == "candidate_pool_exhausted"
+    assert llm.selector_calls == {"atomic": 0, "aggregated": 0, "multi_hop": 0}
+
+    selection_events = [
+        item for item in result["family_selection_trace"] if item["qa_family"] == "atomic"
+    ]
+    assert selection_events == [
+        {
+            "qa_family": "atomic",
+            "step_index": 1,
+            "decision": "atomic_first_hop_fallback",
+            "candidate_uid": (
+                f"image_seed::virtual_image:{selected_first_hop}:"
+                "atomic_first_hop_fallback"
+            ),
+            "candidate_node_id": selected_first_hop,
+            "depth": 1,
+            "direction_mode": "outward",
+            "candidate_pool_after_step": [],
+            "reason": (
+                "Atomic fallback selected one image-adjacent node because no "
+                "logical first-layer candidates remained."
+            ),
+        }
+    ]
+    fallback_termination = next(
+        item
+        for item in result["family_termination_trace"]
+        if item["qa_family"] == "atomic"
+        and item["stage"] == "selection"
+        and item["termination_reason"] == "atomic_first_hop_fallback"
+    )
+    assert fallback_termination["decision"] == "accept"
+    assert fallback_termination["decision_source"] == "system_fallback"
+
+
 def test_family_llm_sampler_abstains_on_bootstrap_protocol_error(tmp_path: Path):
     graph_storage = NetworkXStorage(working_dir=str(tmp_path / "cache"), namespace="graph")
     _build_visual_core_graph(graph_storage)
@@ -781,7 +928,6 @@ def test_family_llm_sampler_abstains_on_bootstrap_protocol_error(tmp_path: Path)
             kv_backend="json_kv",
             graph_backend="networkx",
             allow_bootstrap_fallback=False,
-            strict_abstain_on_empty_bootstrap=True,
         )
 
     rows, _ = service.process([{"_trace_id": "bootstrap-protocol-error"}])
@@ -812,7 +958,7 @@ def test_family_llm_sampler_abstains_on_bootstrap_protocol_error(tmp_path: Path)
     ]
 
 
-def test_family_llm_sampler_abstains_on_empty_bootstrap_keep_list(tmp_path: Path):
+def test_family_llm_sampler_ignores_legacy_empty_bootstrap_keep_list(tmp_path: Path):
     graph_storage = NetworkXStorage(working_dir=str(tmp_path / "cache"), namespace="graph")
     _build_visual_core_graph(graph_storage)
 
@@ -833,18 +979,17 @@ def test_family_llm_sampler_abstains_on_empty_bootstrap_keep_list(tmp_path: Path
             kv_backend="json_kv",
             graph_backend="networkx",
             allow_bootstrap_fallback=False,
-            strict_abstain_on_empty_bootstrap=True,
         )
 
     rows, _ = service.process([{"_trace_id": "bootstrap-empty"}])
     result = rows[0]
-    assert result["abstained"] is True
-    assert result["selected_subgraphs"] == []
-    assert all(
-        session["termination_reason"] == "bootstrap_empty"
-        for session in result["family_sessions"]
-    )
-    assert all(bundle["rejection_reason"] == "bootstrap_empty" for bundle in result["candidate_bundle"])
+    assert result["abstained"] is False
+    assert {item["qa_family"] for item in result["selected_subgraphs"]} == {
+        "atomic",
+        "aggregated",
+        "multi_hop",
+    }
+    assert all(session["termination_reason"] == "accepted" for session in result["family_sessions"])
     assert all(not bundle["protocol_failures"] for bundle in result["candidate_bundle"])
 
 
@@ -984,15 +1129,14 @@ def test_family_llm_sampler_remains_stable_under_chaotic_llm_outputs(tmp_path: P
             graph_backend="networkx",
             max_steps_per_family=1,
             allow_bootstrap_fallback=False,
-            strict_abstain_on_empty_bootstrap=True,
             min_multi_hop_outside_core_edges=2,
         )
 
     rows, _ = service.process([{"_trace_id": "chaotic-llm"}])
     result = rows[0]
-    assert result["abstained"] is True
+    assert result["abstained"] is False
     sessions = {item["qa_family"]: item for item in result["family_sessions"]}
-    assert sessions["atomic"]["termination_reason"] == "bootstrap_empty"
+    assert sessions["atomic"]["termination_reason"] == "accepted"
     assert sessions["aggregated"]["termination_reason"] == "invalid_selection_repeated"
     assert sessions["multi_hop"]["termination_reason"] == "max_steps_reached"
     terminal_events = [

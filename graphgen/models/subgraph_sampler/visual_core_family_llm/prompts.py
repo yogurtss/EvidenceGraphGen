@@ -18,40 +18,37 @@ FAMILY_RULES = {
 }
 
 
-def build_bootstrap_prompt(*, qa_family: str, seed_payload: dict[str, Any], visual_core_candidates: list[dict[str, Any]], preview_candidates: list[dict[str, Any]], runtime_schema: dict[str, Any]) -> str:
+def build_bootstrap_prompt(*, qa_family: str, seed_payload: dict[str, Any], visual_core_candidates: list[str], preview_candidates: list[str], runtime_schema: dict[str, Any]) -> str:
     return (
         "ROLE: VisualCoreBootstrap\n"
         f"QA family: {qa_family}\n"
         f"Family rule: {FAMILY_RULES[qa_family]}\n"
-        "Use the image and the seed-local graph neighborhood to bootstrap one high-quality"
-        " family-specific subgraph.\n"
-        "Important: first-hop visual core candidates are analysis-only image anchors."
-        " They are used only for schema/theme analysis and must never become QA evidence"
-        " nodes or be selected as operation targets.\n"
-        "Pick exactly ONE first-hop anchor for analysis; all concrete graph operations must"
-        " start from second-hop (or deeper) candidates.\n"
-        "Use keep_first_hop_node_ids/drop_first_hop_node_ids only to select analysis anchors.\n"
-        "Return strict JSON with keys: intent, technical_focus, keep_first_hop_node_ids,"
-        " drop_first_hop_node_ids, preferred_entity_types, preferred_relation_types,"
-        " forbidden_patterns, target_reasoning_depth, image_grounding_summary,"
+        "Use the image and the compact seed-local graph neighborhood to define the"
+        " family intent and constraints.\n"
+        "Important: image-adjacent candidates are analysis-only visual core context."
+        " Treat them as part of the image node itself; concrete selector operations"
+        " start from the logical first layer shown in preview candidate lines.\n"
+        "Do not choose nodes here. Return strict JSON with keys: intent,"
+        " technical_focus, forbidden_patterns, image_grounding_summary,"
         " bootstrap_rationale.\n"
         f"Seed payload:\n{json.dumps(seed_payload, ensure_ascii=False)}\n"
-        f"First-hop visual core candidates:\n{json.dumps(visual_core_candidates, ensure_ascii=False)}\n"
-        f"Second-hop preview candidates:\n{json.dumps(preview_candidates, ensure_ascii=False)}\n"
+        f"Image-adjacent visual core lines:\n{json.dumps(visual_core_candidates, ensure_ascii=False)}\n"
+        f"Logical first-layer preview lines:\n{json.dumps(preview_candidates, ensure_ascii=False)}\n"
         f"Runtime schema:\n{json.dumps(runtime_schema, ensure_ascii=False)}\n"
     )
 
 
-def build_selector_prompt(*, qa_family: str, state_payload: dict[str, Any], candidate_pool_payload: list[dict[str, Any]]) -> str:
+def build_selector_prompt(*, qa_family: str, state_payload: dict[str, Any], candidate_pool_payload: list[str]) -> str:
     return (
         "ROLE: FamilyNodeSelector\n"
         f"QA family: {qa_family}\n"
         f"Family rule: {FAMILY_RULES[qa_family]}\n"
-        "Choose at most one next node from the candidate pool.\n"
+        "Choose at most one next node from the compact candidate lines.\n"
+        "Candidate lines use A->B edge/path notation and each line starts with candidate_uid.\n"
         "Return strict JSON with keys: decision, candidate_uid, reason, confidence.\n"
         "Allowed decisions: select_candidate, stop_selection.\n"
         f"Current state:\n{json.dumps(state_payload, ensure_ascii=False)}\n"
-        f"Candidate pool:\n{json.dumps(candidate_pool_payload, ensure_ascii=False)}\n"
+        f"Candidate lines:\n{json.dumps(candidate_pool_payload, ensure_ascii=False)}\n"
     )
 
 

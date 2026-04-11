@@ -73,7 +73,6 @@ nodes:
       max_selector_errors: 2
       max_judge_errors: 1
       min_multi_hop_outside_core_edges: 2
-      strict_abstain_on_empty_bootstrap: true
 
   - id: generate
     op_name: generate
