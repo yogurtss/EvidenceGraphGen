@@ -15,9 +15,15 @@ from .v3_prompts import build_v3_editor_prompt, build_v3_judge_prompt
 class FamilyAwareVLMSubgraphSampler(GraphEditingVLMSubgraphSampler):
     FAMILY_ORDER = ("atomic", "aggregated", "multi_hop")
 
-    def _parse_actions(self, raw_actions: list[Any]) -> list[GraphEditAction]:
+    def _parse_actions(self, raw_actions: list[Any] | None = None, raw_action: Any | None = None) -> list[GraphEditAction]:
+        source_actions: list[Any] = []
+        prefer_single_action = isinstance(raw_action, dict)
+        if prefer_single_action:
+            source_actions.append(raw_action)
+        elif isinstance(raw_actions, list):
+            source_actions.extend(raw_actions)
         actions = []
-        for item in raw_actions:
+        for item in source_actions:
             if not isinstance(item, dict):
                 continue
             action_type = str(item.get("action_type", "")).strip()
@@ -40,6 +46,10 @@ class FamilyAwareVLMSubgraphSampler(GraphEditingVLMSubgraphSampler):
                     note=compact_text(item.get("note", ""), limit=160),
                 )
             )
+        if not actions:
+            return []
+        if prefer_single_action:
+            return [actions[0]]
         return actions
 
     def __init__(
@@ -219,7 +229,10 @@ class FamilyAwareVLMSubgraphSampler(GraphEditingVLMSubgraphSampler):
                         payload=editor_payload,
                         qa_family=qa_family,
                     )
-                    actions = self._parse_actions(editor_payload.get("actions", []))
+                    actions = self._parse_actions(
+                        raw_actions=editor_payload.get("actions", []),
+                        raw_action=editor_payload.get("action"),
+                    )
                     commit_requested = False
                     round_actions = []
                     frontier_updated = False

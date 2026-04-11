@@ -84,15 +84,16 @@ def build_v3_editor_prompt(
         '  "technical_focus": "string",\n'
         '  "image_grounding_summary": "string",\n'
         '  "evidence_summary": "string",\n'
-        '  "actions": [\n'
-        '    {"action_type": "add_node", "node_id": "...", "anchor_node_id": "...", "src_id": "...", "tgt_id": "..."},\n'
-        '    {"action_type": "remove_node", "node_id": "..."},\n'
-        '    {"action_type": "remove_edge", "src_id": "...", "tgt_id": "..."},\n'
-        '    {"action_type": "revise_intent", "intent": "...", "technical_focus": "..."},\n'
-        '    {"action_type": "query_nodes", "note": "optional"},\n'
-        '    {"action_type": "query_edges", "note": "optional"},\n'
-        '    {"action_type": "commit_for_judgement"}\n'
-        "  ]\n"
+        '  "action": {\n'
+        '    "action_type": "add_node | remove_node | remove_edge | revise_intent | query_nodes | query_edges | commit_for_judgement",\n'
+        '    "node_id": "...",\n'
+        '    "anchor_node_id": "...",\n'
+        '    "src_id": "...",\n'
+        '    "tgt_id": "...",\n'
+        '    "intent": "...",\n'
+        '    "technical_focus": "...",\n'
+        '    "note": "optional"\n'
+        "  }\n"
         "}\n"
     )
 
