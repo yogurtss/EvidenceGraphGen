@@ -7,7 +7,7 @@ FAMILY_RULES = {
         " second-layer expansion."
     ),
     "aggregated": (
-        "Keep a coherent visual topic. Bootstrap from multiple relevant first-hop nodes,"
+        "Keep a coherent visual topic. Bootstrap from one relevant first-hop analysis anchor,"
         " then allow same-direction breadth and only go deeper when it clearly improves"
         " coherence."
     ),

@@ -2300,10 +2300,6 @@ class VisualCoreFamilyLLMSubgraphSampler:
         return ranked[: self._max_visual_core_keeps(qa_family)]
 
     def _max_visual_core_keeps(self, qa_family: str) -> int:
-        if qa_family == "atomic":
-            return 1
-        if qa_family == "aggregated":
-            return 3
         return 1
 
     def _collect_visual_core_candidates(
