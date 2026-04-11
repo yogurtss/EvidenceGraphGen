@@ -89,8 +89,8 @@ class _DummyVisualCoreLLM:
                 {
                     "intent": "Explain the timing topic around the highlighted figure",
                     "technical_focus": "timing",
-                    "keep_first_hop_node_ids": ["latency_metric", "voltage_metric"],
-                    "drop_first_hop_node_ids": ["decoder_logic"],
+                    "keep_first_hop_node_ids": ["latency_metric"],
+                    "drop_first_hop_node_ids": ["voltage_metric", "decoder_logic"],
                     "preferred_entity_types": ["METRIC", "CONCEPT"],
                     "preferred_relation_types": ["shows_metric", "constrains"],
                     "forbidden_patterns": ["decoder"],
@@ -517,7 +517,7 @@ def test_sample_subgraph_family_llm_bootstraps_visual_core_and_updates_candidate
         item["qa_family"]: item for item in result["family_bootstrap_trace"]
     }
     aggregated_bootstrap = bootstrap_by_family["aggregated"]
-    assert aggregated_bootstrap["kept_first_hop_node_ids"] == ["latency_metric", "voltage_metric"]
+    assert aggregated_bootstrap["kept_first_hop_node_ids"] == ["latency_metric"]
     assert "decoder_logic" in aggregated_bootstrap["dropped_first_hop_node_ids"]
 
     aggregated_bootstrap_state = next(
@@ -530,7 +530,8 @@ def test_sample_subgraph_family_llm_bootstraps_visual_core_and_updates_candidate
         for candidate in aggregated_bootstrap_state["candidate_pool"]
     }
     assert "decoder_lane" not in aggregated_bootstrap_candidates
-    assert {"row_activation", "timing_window", "bank_conflict", "voltage_guard"} <= aggregated_bootstrap_candidates
+    assert {"row_activation", "timing_window", "bank_conflict"} <= aggregated_bootstrap_candidates
+    assert "voltage_guard" not in aggregated_bootstrap_candidates
 
     selected_by_family = {
         item["qa_family"]: item for item in result["selected_subgraphs"]
@@ -569,7 +570,7 @@ def test_sample_subgraph_family_llm_bootstraps_visual_core_and_updates_candidate
     assert {"image_seed::virtual_image", "row_activation", "random_access_perf"} <= aggregated_nodes
     assert not {"image_seed", "latency_metric", "voltage_metric"} & aggregated_nodes
     assert aggregated["visual_core_node_ids"] == ["image_seed::virtual_image"]
-    assert aggregated["analysis_first_hop_node_ids"] == ["latency_metric", "voltage_metric"]
+    assert aggregated["analysis_first_hop_node_ids"] == ["latency_metric"]
     assert aggregated["direction_mode"] == "outward"
     assert aggregated["direction_anchor_edge"] == ["image_seed::virtual_image", "row_activation"]
     assert {
