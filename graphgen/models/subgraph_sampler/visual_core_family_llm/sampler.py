@@ -2432,11 +2432,11 @@ class VisualCoreFamilyLLMSubgraphSampler:
             if not self._passes_provenance_guardrail(node_data=node_data, edge_data=edge_data, seed_scope=seed_scope):
                 continue
             new_path = bind_path + [neighbor_id]
-            hop = len(new_path) - 1
             depth = self._candidate_depth_from_path(
                 new_path,
                 visual_core_node_ids=visual_core_node_ids,
             )
+            effective_hop = depth
             if depth > max_depth:
                 depth_limit_hit = True
                 continue
@@ -2451,7 +2451,9 @@ class VisualCoreFamilyLLMSubgraphSampler:
                 candidate_node_id=neighbor_id,
                 edge_direction=edge_direction,
             )
-            candidate_uid = f"{bind_from_node_id}:{neighbor_id}:{hop}:{bridge_first_hop_id}"
+            candidate_uid = (
+                f"{bind_from_node_id}:{neighbor_id}:{effective_hop}:{bridge_first_hop_id}"
+            )
             if candidate_uid in blocked_set or candidate_uid in seen:
                 continue
             seen.add(candidate_uid)
@@ -2461,7 +2463,7 @@ class VisualCoreFamilyLLMSubgraphSampler:
                     candidate_node_id=neighbor_id,
                     bind_from_node_id=bind_from_node_id,
                     bound_edge_pair=bound_edge_pair,
-                    hop=hop,
+                    hop=effective_hop,
                     depth=depth,
                     relation_type=str(edge_data.get("relation_type", "")),
                     entity_type=str(node_data.get("entity_type", "")),
