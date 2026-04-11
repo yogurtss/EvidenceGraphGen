@@ -16,7 +16,7 @@ build_grounded_tree_kg
 -> generate(method=auto)
 ```
 
-这条是当前推荐的 LLM visual-core 路径，主实现位于 `graphgen/models/subgraph_sampler/visual_core_family_llm_sampler.py`。它把子图构造拆成 bootstrap、selector、termination judge 和代码侧 postcheck，输出 `family_llm_v2` 子图，再交给 `generate(method=auto)` 按 `qa_family` 生成 QA。
+这条是当前推荐的 LLM visual-core 路径，主实现位于 `graphgen/models/subgraph_sampler/visual_core_family_llm/sampler.py`（兼容导出保留在 `graphgen/models/subgraph_sampler/visual_core_family_llm_sampler.py`）。它把子图构造拆成 bootstrap、selector、termination judge 和代码侧 postcheck，输出 `family_llm_v2` 子图，再交给 `generate(method=auto)` 按 `qa_family` 生成 QA。
 
 ## 当前流程
 
