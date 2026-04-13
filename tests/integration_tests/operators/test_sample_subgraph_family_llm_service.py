@@ -103,14 +103,27 @@ class _DummyVisualCoreLLM:
         family = self._extract_family(prompt)
         state = self._extract_json_between(prompt, "Current state:\n", "\nCandidate lines:\n")
         candidate_lines = self._extract_json_after(prompt, "Candidate lines:\n")
+        assert all("candidate_uid" not in line for line in candidate_lines)
         self.selector_calls[family] = self.selector_calls.get(family, 0) + 1
         if family == "aggregated":
-            target = "row_activation" if "row_activation" not in state.get("selected_node_ids", []) else "random_access_perf"
-            candidate_uid = self._candidate_uid_for_node(candidate_lines, target)
+            selected_nodes = set(state.get("selected_node_ids", []))
+            candidate_node_ids = self._candidate_node_ids(candidate_lines)
+            target = next(
+                node_id
+                for node_id in (
+                    "row_activation",
+                    "timing_window",
+                    "bank_conflict",
+                    "voltage_guard",
+                    "decoder_lane",
+                    "random_access_perf",
+                )
+                if node_id not in selected_nodes and node_id in candidate_node_ids
+            )
             return json.dumps(
                 {
                     "decision": "select_candidate",
-                    "candidate_uid": candidate_uid,
+                    "candidate_node_id": target,
                     "reason": f"Select {target} for the timing aggregation.",
                     "confidence": 0.9,
                 }
@@ -122,21 +135,19 @@ class _DummyVisualCoreLLM:
                 target = "row_activation"
             else:
                 target = "random_access_perf"
-            candidate_uid = self._candidate_uid_for_node(candidate_lines, target)
             return json.dumps(
                 {
                     "decision": "select_candidate",
-                    "candidate_uid": candidate_uid,
+                    "candidate_node_id": target,
                     "reason": f"Select {target} for the active chain.",
                     "confidence": 0.92,
                 }
             )
         if family == "atomic":
-            candidate_uid = self._candidate_uid_for_node(candidate_lines, "row_activation")
             return json.dumps(
                 {
                     "decision": "select_candidate",
-                    "candidate_uid": candidate_uid,
+                    "candidate_node_id": "row_activation",
                     "reason": "Select one second-hop timing fact for atomic QA.",
                     "confidence": 0.9,
                 }
@@ -147,6 +158,8 @@ class _DummyVisualCoreLLM:
         family = self._extract_family(prompt)
         stage = self._extract_stage(prompt)
         state = self._extract_json_between(prompt, "Current state:\n", "\nLast selected candidate:\n")
+        candidate_pool = self._extract_json_after(prompt, "Current candidate pool:\n")
+        assert all("evidence=" in line for line in candidate_pool)
         selected_nodes = state.get("selected_node_ids", [])
         if family == "atomic":
             return self._decision_json("accept", True, "accepted", 0.88)
@@ -211,9 +224,12 @@ class _DummyVisualCoreLLM:
         return json.loads(prompt.split(start_marker, 1)[1])
 
     @staticmethod
-    def _candidate_uid_for_node(candidate_lines: list[str], node_id: str) -> str:
-        marker = f"node={node_id} |"
-        return next(line.split(" | ", 1)[0] for line in candidate_lines if marker in line)
+    def _candidate_node_ids(candidate_lines: list[str]) -> set[str]:
+        return {
+            line.split(" | ", 1)[0].removeprefix("node=")
+            for line in candidate_lines
+            if line.startswith("node=")
+        }
 
 
 class _EmptyBootstrapLLM(_DummyVisualCoreLLM):
@@ -252,7 +268,7 @@ class _InvalidSelectorLLM(_DummyVisualCoreLLM):
             return json.dumps(
                 {
                     "decision": "select_candidate",
-                    "candidate_uid": "missing:candidate:uid",
+                    "candidate_node_id": "missing_candidate_node",
                     "reason": "Keep selecting an invalid candidate to test termination.",
                     "confidence": 0.2,
                 }
@@ -278,12 +294,10 @@ class _ShallowMultiHopAcceptLLM(_DummyVisualCoreLLM):
         family = self._extract_family(prompt)
         if family != "multi_hop":
             return super()._selector_response(prompt)
-        candidate_lines = self._extract_json_after(prompt, "Candidate lines:\n")
-        candidate_uid = self._candidate_uid_for_node(candidate_lines, "row_activation")
         return json.dumps(
             {
                 "decision": "select_candidate",
-                "candidate_uid": candidate_uid,
+                "candidate_node_id": "row_activation",
                 "reason": "Try to accept after a shallow single outside-core hop.",
                 "confidence": 0.93,
             }
@@ -326,18 +340,16 @@ class _ChaoticVisualCoreLLM(_DummyVisualCoreLLM):
             return json.dumps(
                 {
                     "decision": "select_candidate",
-                    "candidate_uid": "still:missing:uid",
+                    "candidate_node_id": "still_missing_node",
                     "reason": "Repeated invalid selector output.",
                     "confidence": 0.1,
                 }
             )
         if family == "multi_hop":
-            candidate_lines = self._extract_json_after(prompt, "Candidate lines:\n")
-            candidate_uid = self._candidate_uid_for_node(candidate_lines, "row_activation")
             return json.dumps(
                 {
                     "decision": "select_candidate",
-                    "candidate_uid": candidate_uid,
+                    "candidate_node_id": "row_activation",
                     "reason": "Shallow multi-hop accept attempt.",
                     "confidence": 0.9,
                 }
@@ -522,7 +534,7 @@ def test_sample_subgraph_family_llm_bootstraps_visual_core_and_updates_candidate
             graph_backend="networkx",
             family_qa_targets={"atomic": 1, "aggregated": 2, "multi_hop": 1},
             family_max_depths={"atomic": 0, "aggregated": 2, "multi_hop": 3},
-            max_steps_per_family=3,
+            max_steps_per_family=5,
             max_rollbacks_per_family=1,
         )
 
@@ -565,8 +577,7 @@ def test_sample_subgraph_family_llm_bootstraps_visual_core_and_updates_candidate
         "timing_window",
         "bank_conflict",
         "voltage_guard",
-        "random_access_perf",
-    } <= aggregated_first_step_candidates
+    } == aggregated_first_step_candidates
 
     selected_by_family = {
         item["qa_family"]: item for item in result["selected_subgraphs"]
@@ -621,6 +632,17 @@ def test_sample_subgraph_family_llm_bootstraps_visual_core_and_updates_candidate
     } == set()
     assert aggregated["target_qa_count"] == 2
 
+    aggregated_expansion_step = next(
+        item
+        for item in result["family_selection_trace"]
+        if item["qa_family"] == "aggregated"
+        and item["candidate_node_id"] == "voltage_guard"
+    )
+    assert {
+        candidate["candidate_node_id"]
+        for candidate in aggregated_expansion_step["candidate_pool_after_step"]
+    } == {"random_access_perf"}
+
     aggregated_deeper_step = next(
         item
         for item in result["family_selection_trace"]
@@ -652,7 +674,7 @@ def test_sample_subgraph_family_llm_bootstraps_visual_core_and_updates_candidate
     assert {
         candidate["candidate_node_id"]
         for candidate in multi_hop_chain_step["candidate_pool_after_step"]
-    } == {"timing_window", "voltage_guard", "random_access_perf"}
+    } == {"random_access_perf"}
 
     visualization_trace = result["visualization_trace"]
     assert visualization_trace["schema_version"] == "visual_core_family_timeline_v1"
@@ -979,6 +1001,7 @@ def test_family_llm_sampler_ignores_legacy_empty_bootstrap_keep_list(tmp_path: P
             kv_backend="json_kv",
             graph_backend="networkx",
             allow_bootstrap_fallback=False,
+            max_steps_per_family=6,
         )
 
     rows, _ = service.process([{"_trace_id": "bootstrap-empty"}])

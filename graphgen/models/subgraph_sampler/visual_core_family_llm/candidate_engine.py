@@ -161,10 +161,7 @@ class VisualCoreFamilyCandidateEngineMixin:
         *,
         state: FamilySessionState,
         candidate: FamilyCandidatePoolItem,
-        seed_scope: set[str],
-        max_depth: int,
-    ) -> bool:
-        old_depth = state.current_outside_depth
+    ) -> None:
         if candidate.candidate_node_id not in state.selected_node_ids:
             state.selected_node_ids.append(candidate.candidate_node_id)
         state.selected_edge_pairs.append(list(candidate.bound_edge_pair))
@@ -180,11 +177,53 @@ class VisualCoreFamilyCandidateEngineMixin:
             state.direction_mode = candidate.edge_direction
             state.direction_anchor_edge = list(candidate.bound_edge_pair)
 
-        depth_limit_hit = False
         if state.qa_family == "atomic":
             state.candidate_pool = []
-            return depth_limit_hit
+            return
 
+        selected_nodes = set(state.selected_node_ids)
+        state.candidate_pool = [
+            item
+            for item in state.candidate_pool
+            if item.candidate_node_id not in selected_nodes
+            and item.candidate_uid not in state.blocked_candidate_uids
+        ]
+
+    def _update_candidate_pool_after_judge(
+        self,
+        *,
+        state: FamilySessionState,
+        candidate: FamilyCandidatePoolItem,
+        seed_scope: set[str],
+        max_depth: int,
+    ) -> bool:
+        if state.qa_family == "atomic":
+            state.candidate_pool = []
+            return False
+
+        if state.qa_family == "aggregated":
+            return self._update_aggregated_candidate_pool_after_judge(
+                state=state,
+                candidate=candidate,
+                seed_scope=seed_scope,
+                max_depth=max_depth,
+            )
+
+        return self._update_multi_hop_candidate_pool_after_judge(
+            state=state,
+            candidate=candidate,
+            seed_scope=seed_scope,
+            max_depth=max_depth,
+        )
+
+    def _update_aggregated_candidate_pool_after_judge(
+        self,
+        *,
+        state: FamilySessionState,
+        candidate: FamilyCandidatePoolItem,
+        seed_scope: set[str],
+        max_depth: int,
+    ) -> bool:
         selected_or_reverse_pairs = {
             self._pair_key(candidate.bound_edge_pair),
             self._pair_key(list(reversed(candidate.bound_edge_pair))),
@@ -192,10 +231,13 @@ class VisualCoreFamilyCandidateEngineMixin:
         base_pool = [
             item
             for item in state.candidate_pool
-            if item.candidate_uid != candidate.candidate_uid
-            and item.candidate_node_id not in set(state.selected_node_ids)
+            if item.candidate_node_id not in set(state.selected_node_ids)
             and item.candidate_uid not in state.blocked_candidate_uids
             and self._pair_key(item.bound_edge_pair) not in selected_or_reverse_pairs
+            and not (
+                item.depth == candidate.depth
+                and item.edge_direction != candidate.edge_direction
+            )
         ]
         base_pool = [
             item
@@ -203,17 +245,62 @@ class VisualCoreFamilyCandidateEngineMixin:
             if self._is_direction_compatible(state, item)
             and self._passes_session_guardrails(state, item)
         ]
-        if old_depth > 0 and candidate.depth > old_depth:
-            base_pool = [
-                item
-                for item in base_pool
-                if item.depth >= candidate.depth
-            ]
 
+        depth_limit_hit = False
+        next_candidates = []
+        if not base_pool:
+            for bind_node_id in state.selected_node_ids:
+                if bind_node_id in set(state.visual_core_node_ids):
+                    continue
+                candidates, hit_limit = self._build_candidates_from_bind_node(
+                    bind_from_node_id=bind_node_id,
+                    selected_node_ids=set(state.selected_node_ids)
+                    | set(state.analysis_only_node_ids),
+                    path_by_node_id=state.path_by_node_id,
+                    visual_core_node_ids=set(state.visual_core_node_ids),
+                    seed_scope=seed_scope,
+                    max_depth=max_depth,
+                    blocked_candidate_uids=state.blocked_candidate_uids,
+                )
+                depth_limit_hit = depth_limit_hit or hit_limit
+                next_candidates.extend(candidates)
+        next_candidates = [
+            item
+            for item in next_candidates
+            if self._is_direction_compatible(state, item)
+            and self._passes_session_guardrails(state, item)
+        ]
+
+        merged = {}
+        for item in base_pool + next_candidates:
+            merged[item.candidate_uid] = item
+        state.candidate_pool = sorted(
+            merged.values(),
+            key=lambda item: (item.depth, -item.score, item.candidate_uid),
+        )
+        return depth_limit_hit
+
+    def _update_multi_hop_candidate_pool_after_judge(
+        self,
+        *,
+        state: FamilySessionState,
+        candidate: FamilyCandidatePoolItem,
+        seed_scope: set[str],
+        max_depth: int,
+    ) -> bool:
+        selected_nodes = set(state.selected_node_ids)
+        base_pool = [
+            item
+            for item in state.candidate_pool
+            if item.candidate_node_id not in selected_nodes
+            and item.candidate_uid not in state.blocked_candidate_uids
+            and item.depth != candidate.depth
+            and self._is_direction_compatible(state, item)
+            and self._passes_session_guardrails(state, item)
+        ]
         next_candidates, depth_limit_hit = self._build_candidates_from_bind_node(
             bind_from_node_id=candidate.candidate_node_id,
-            selected_node_ids=set(state.selected_node_ids)
-            | set(state.analysis_only_node_ids),
+            selected_node_ids=selected_nodes | set(state.analysis_only_node_ids),
             path_by_node_id=state.path_by_node_id,
             visual_core_node_ids=set(state.visual_core_node_ids),
             seed_scope=seed_scope,

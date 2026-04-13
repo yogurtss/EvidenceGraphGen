@@ -17,6 +17,21 @@ FAMILY_RULES = {
     ),
 }
 
+JUDGE_RULES = {
+    "atomic": (
+        "Accept only when the graph has the image plus one grounded evidence node."
+        " Do not ask for further expansion."
+    ),
+    "aggregated": (
+        "Judge topic coherence and whether the remaining candidate pool still has"
+        " useful same-topic evidence. Do not focus on a fixed node count."
+    ),
+    "multi_hop": (
+        "Judge whether the selected graph forms a single same-direction chain deep"
+        " enough beyond the visual core, or should continue along that chain."
+    ),
+}
+
 
 def build_bootstrap_prompt(*, qa_family: str, seed_payload: dict[str, Any], visual_core_candidates: list[str], preview_candidates: list[str], runtime_schema: dict[str, Any]) -> str:
     return (
@@ -44,21 +59,21 @@ def build_selector_prompt(*, qa_family: str, state_payload: dict[str, Any], cand
         f"QA family: {qa_family}\n"
         f"Family rule: {FAMILY_RULES[qa_family]}\n"
         "Choose at most one next node from the compact candidate lines.\n"
-        "Candidate lines use A->B edge/path notation and each line starts with candidate_uid.\n"
-        "Return strict JSON with keys: decision, candidate_uid, reason, confidence.\n"
+        "Return strict JSON with keys: decision, candidate_node_id, reason, confidence.\n"
         "Allowed decisions: select_candidate, stop_selection.\n"
         f"Current state:\n{json.dumps(state_payload, ensure_ascii=False)}\n"
         f"Candidate lines:\n{json.dumps(candidate_pool_payload, ensure_ascii=False)}\n"
     )
 
 
-def build_termination_prompt(*, qa_family: str, state_payload: dict[str, Any], stage: str, last_selected_candidate: dict[str, Any] | None) -> str:
+def build_termination_prompt(*, qa_family: str, state_payload: dict[str, Any], stage: str, last_selected_candidate: dict[str, Any] | None, candidate_pool_payload: list[str]) -> str:
     return (
         "ROLE: FamilyTerminationJudge\n"
         f"QA family: {qa_family}\n"
         f"Family rule: {FAMILY_RULES[qa_family]}\n"
+        f"Judge rule: {JUDGE_RULES[qa_family]}\n"
         "Evaluate whether the current subgraph is sufficient, needs another step, or should"
-        " rollback the last iterative step.\n"
+        " rollback the last step.\n"
         "Return strict JSON with keys: decision, sufficient, termination_reason, reason,"
         " suggested_action, scores.\n"
         "Allowed decisions: continue, accept, rollback_last_step, reject.\n"
@@ -68,4 +83,5 @@ def build_termination_prompt(*, qa_family: str, state_payload: dict[str, Any], s
         f"Stage: {stage}\n"
         f"Current state:\n{json.dumps(state_payload, ensure_ascii=False)}\n"
         f"Last selected candidate:\n{json.dumps(last_selected_candidate or {}, ensure_ascii=False)}\n"
+        f"Current candidate pool:\n{json.dumps(candidate_pool_payload, ensure_ascii=False)}\n"
     )

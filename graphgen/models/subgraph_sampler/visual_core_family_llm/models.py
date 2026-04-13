@@ -203,6 +203,7 @@ class BootstrapStageResult:
 class SelectorStageResult:
     decision: str = "stop_selection"
     candidate_uid: str = ""
+    candidate_node_id: str = ""
     reason: str = ""
     confidence: float = 0.0
     protocol_status: str = "ok"
@@ -213,6 +214,7 @@ class SelectorStageResult:
         return {
             "decision": self.decision,
             "candidate_uid": self.candidate_uid,
+            "candidate_node_id": self.candidate_node_id,
             "reason": self.reason,
             "confidence": round(float(self.confidence), 4),
             "protocol_status": self.protocol_status,

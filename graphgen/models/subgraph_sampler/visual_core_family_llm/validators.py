@@ -122,36 +122,55 @@ def validate_selector_payload(
             raw_payload=payload,
         )
 
-    candidate_uid = str(payload.get("candidate_uid", "")).strip()
-    if not candidate_uid:
+    candidate_node_id = str(payload.get("candidate_node_id", "")).strip()
+    if not candidate_node_id:
         return SelectorStageResult(
             protocol_status="error",
             protocol_error_type="schema_error",
-            reason="selector_candidate_uid_missing",
+            reason="selector_candidate_node_id_missing",
             raw_payload=payload,
         )
 
-    if candidate_uid in set(state.blocked_candidate_uids):
+    matches = [
+        item for item in state.candidate_pool
+        if item.candidate_node_id == candidate_node_id
+    ]
+    if not matches:
         return SelectorStageResult(
-            candidate_uid=candidate_uid,
-            reason="blocked_candidate_uid",
+            candidate_node_id=candidate_node_id,
+            reason="candidate_node_id_not_in_pool",
             protocol_status="error",
             protocol_error_type="semantic_error",
             raw_payload=payload,
         )
 
-    if all(item.candidate_uid != candidate_uid for item in state.candidate_pool):
+    unblocked_matches = [
+        item for item in matches
+        if item.candidate_uid not in set(state.blocked_candidate_uids)
+    ]
+    if not unblocked_matches:
         return SelectorStageResult(
-            candidate_uid=candidate_uid,
-            reason="candidate_uid_not_in_pool",
+            candidate_node_id=candidate_node_id,
+            reason="blocked_candidate_node_id",
             protocol_status="error",
             protocol_error_type="semantic_error",
             raw_payload=payload,
         )
+    if len(unblocked_matches) > 1:
+        return SelectorStageResult(
+            candidate_node_id=candidate_node_id,
+            reason="ambiguous_candidate_node_id",
+            protocol_status="error",
+            protocol_error_type="semantic_error",
+            raw_payload=payload,
+        )
+
+    candidate = unblocked_matches[0]
 
     return SelectorStageResult(
         decision="select_candidate",
-        candidate_uid=candidate_uid,
+        candidate_uid=candidate.candidate_uid,
+        candidate_node_id=candidate.candidate_node_id,
         reason=compact_text(payload.get("reason", ""), limit=240),
         confidence=clip_score(payload.get("confidence")),
         raw_payload=payload,

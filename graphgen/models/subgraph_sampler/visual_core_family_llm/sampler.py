@@ -445,17 +445,22 @@ class VisualCoreFamilyLLMSubgraphSampler(
                 )
                 if selector_result.protocol_error_type == "semantic_error":
                     state.invalid_selection_count += 1
-                    if selector_result.candidate_uid and selector_result.candidate_uid == state.last_invalid_candidate_uid:
+                    invalid_candidate_key = (
+                        selector_result.candidate_node_id
+                        or selector_result.candidate_uid
+                    )
+                    if invalid_candidate_key and invalid_candidate_key == state.last_invalid_candidate_uid:
                         state.invalid_candidate_repeat_count += 1
                     else:
                         state.invalid_candidate_repeat_count = 1
-                    state.last_invalid_candidate_uid = selector_result.candidate_uid
+                    state.last_invalid_candidate_uid = invalid_candidate_key
                     selection_trace.append(
                         {
                             "qa_family": qa_family,
                             "step_index": state.step_count + 1,
                             "decision": "invalid_selection",
                             "candidate_uid": selector_result.candidate_uid,
+                            "candidate_node_id": selector_result.candidate_node_id,
                             "reason": selector_result.reason,
                             "protocol_status": "error",
                             "protocol_error_type": selector_result.protocol_error_type,
@@ -482,6 +487,7 @@ class VisualCoreFamilyLLMSubgraphSampler(
                         "step_index": state.step_count + 1,
                         "decision": "selector_protocol_error",
                         "candidate_uid": selector_result.candidate_uid,
+                        "candidate_node_id": selector_result.candidate_node_id,
                         "reason": selector_result.reason,
                         "protocol_status": "error",
                         "protocol_error_type": selector_result.protocol_error_type,
@@ -525,24 +531,9 @@ class VisualCoreFamilyLLMSubgraphSampler(
                 for item in state.candidate_pool
                 if item.candidate_uid == selector_result.candidate_uid
             )
-            depth_limit_hit = self._apply_candidate_selection(
+            self._apply_candidate_selection(
                 state=state,
                 candidate=candidate,
-                seed_scope=seed_scope,
-                max_depth=self.family_max_depths[qa_family],
-            )
-            selection_trace.append(
-                {
-                    "qa_family": qa_family,
-                    "step_index": state.step_count,
-                    "decision": "select_candidate",
-                    "candidate_uid": candidate.candidate_uid,
-                    "candidate_node_id": candidate.candidate_node_id,
-                    "depth": candidate.depth,
-                    "direction_mode": state.direction_mode,
-                    "candidate_pool_after_step": [item.to_dict() for item in state.candidate_pool],
-                    "reason": selector_result.reason,
-                }
             )
 
             judge_decision = await self._judge_state(
@@ -592,8 +583,12 @@ class VisualCoreFamilyLLMSubgraphSampler(
                             "step_index": state.step_count,
                             "decision": "rollback_after_judge_protocol_error",
                             "candidate_uid": candidate.candidate_uid,
+                            "candidate_node_id": candidate.candidate_node_id,
                             "rollback_count": state.rollback_count,
                             "state_after_rollback": state.to_dict(),
+                            "candidate_pool_after_step": [
+                                item.to_dict() for item in state.candidate_pool
+                            ],
                         }
                     )
                     if not state.candidate_pool:
@@ -613,6 +608,30 @@ class VisualCoreFamilyLLMSubgraphSampler(
                     protocol_status="error",
                     reason=judge_decision.reason or "judge_protocol_error",
                     protocol_error_type=judge_decision.protocol_error_type,
+                )
+
+            depth_limit_hit = False
+            if judge_decision.decision in {"accept", "continue"}:
+                depth_limit_hit = self._update_candidate_pool_after_judge(
+                    state=state,
+                    candidate=candidate,
+                    seed_scope=seed_scope,
+                    max_depth=self.family_max_depths[qa_family],
+                )
+                selection_trace.append(
+                    {
+                        "qa_family": qa_family,
+                        "step_index": state.step_count,
+                        "decision": "select_candidate",
+                        "candidate_uid": candidate.candidate_uid,
+                        "candidate_node_id": candidate.candidate_node_id,
+                        "depth": candidate.depth,
+                        "direction_mode": state.direction_mode,
+                        "candidate_pool_after_step": [
+                            item.to_dict() for item in state.candidate_pool
+                        ],
+                        "reason": selector_result.reason,
+                    }
                 )
 
             if judge_decision.decision == "accept":
@@ -667,8 +686,12 @@ class VisualCoreFamilyLLMSubgraphSampler(
                         "step_index": state.step_count,
                         "decision": "rollback_last_step",
                         "candidate_uid": candidate.candidate_uid,
+                        "candidate_node_id": candidate.candidate_node_id,
                         "rollback_count": state.rollback_count,
                         "state_after_rollback": state.to_dict(),
+                        "candidate_pool_after_step": [
+                            item.to_dict() for item in state.candidate_pool
+                        ],
                     }
                 )
                 if not state.candidate_pool:
@@ -682,6 +705,21 @@ class VisualCoreFamilyLLMSubgraphSampler(
                 continue
 
             if judge_decision.decision == "reject":
+                selection_trace.append(
+                    {
+                        "qa_family": qa_family,
+                        "step_index": state.step_count,
+                        "decision": "select_candidate",
+                        "candidate_uid": candidate.candidate_uid,
+                        "candidate_node_id": candidate.candidate_node_id,
+                        "depth": candidate.depth,
+                        "direction_mode": state.direction_mode,
+                        "candidate_pool_after_step": [
+                            item.to_dict() for item in state.candidate_pool
+                        ],
+                        "reason": selector_result.reason,
+                    }
+                )
                 return _finalize(
                     termination_reason=judge_decision.termination_reason or "judge_rejected",
                     scorecard=judge_decision.scorecard,
@@ -791,6 +829,7 @@ class VisualCoreFamilyLLMSubgraphSampler(
             last_selected_candidate=self._compact_candidate_prompt_payload(
                 last_selected_candidate
             ),
+            candidate_pool_payload=self._candidate_prompt_lines(state.candidate_pool),
         )
         last_decision = FamilyTerminationDecision(
             decision="reject",
@@ -879,7 +918,6 @@ class VisualCoreFamilyLLMSubgraphSampler(
             "current_outside_depth": state.current_outside_depth,
             "step_count": state.step_count,
             "rollback_count": state.rollback_count,
-            "blocked_candidate_uids": list(state.blocked_candidate_uids),
             "candidate_pool_size": len(state.candidate_pool),
         }
 
@@ -892,21 +930,12 @@ class VisualCoreFamilyLLMSubgraphSampler(
     def _candidate_prompt_line(self, candidate: FamilyCandidatePoolItem) -> str:
         node_data = self.graph.get_node(candidate.candidate_node_id) or {}
         logical_edge = self._pair_key(candidate.bound_edge_pair)
-        source_path = candidate.virtualized_from_path or candidate.frontier_path
-        path = "->".join(str(item) for item in source_path)
-        anchor = (
-            candidate.analysis_anchor_node_id
-            or candidate.bridge_first_hop_id
-            or candidate.bind_from_node_id
-        )
         node_name = compact_text(node_data.get("entity_name", ""), limit=60)
         evidence = compact_text(candidate.evidence_summary, limit=120)
         return (
-            f"{candidate.candidate_uid} | edge={logical_edge} | path={path} | "
-            f"node={candidate.candidate_node_id} | name={node_name} | "
+            f"node={candidate.candidate_node_id} | edge={logical_edge} | name={node_name} | "
             f"type={candidate.entity_type} | rel={candidate.relation_type} | "
             f"depth={candidate.depth} | dir={candidate.edge_direction} | "
-            f"score={round(float(candidate.score), 4)} | via={anchor} | "
             f"evidence={evidence}"
         )
 
@@ -922,27 +951,13 @@ class VisualCoreFamilyLLMSubgraphSampler(
             if isinstance(bound_edge_pair, list) and len(bound_edge_pair) >= 2
             else ""
         )
-        source_path = candidate_payload.get("virtualized_from_path") or candidate_payload.get(
-            "frontier_path", []
-        )
-        path = (
-            "->".join(str(item) for item in source_path)
-            if isinstance(source_path, list)
-            else ""
-        )
         return {
-            "candidate_uid": str(candidate_payload.get("candidate_uid", "")),
             "candidate_node_id": str(candidate_payload.get("candidate_node_id", "")),
             "edge": edge,
-            "path": path,
             "entity_type": compact_text(candidate_payload.get("entity_type", ""), limit=60),
             "relation_type": compact_text(candidate_payload.get("relation_type", ""), limit=60),
             "depth": int(candidate_payload.get("depth", 0) or 0),
             "edge_direction": str(candidate_payload.get("edge_direction", "")),
-            "via": str(
-                candidate_payload.get("analysis_anchor_node_id", "")
-                or candidate_payload.get("bridge_first_hop_id", "")
-            ),
             "evidence": compact_text(
                 candidate_payload.get("evidence_summary", ""), limit=120
             ),
