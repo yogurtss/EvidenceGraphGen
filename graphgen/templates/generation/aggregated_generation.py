@@ -98,6 +98,100 @@ ANSWER_REPHRASING_CONTEXT_ZH: str = """---角色---
 
 """
 
+ANSWER_REPHRASING_SOURCE_CONTEXT_EN: str = """---Role---
+You are an NLP expert responsible for generating a logically structured and coherent rephrased version of the TEXT based on ENTITIES and RELATIONSHIPS provided below. You may refer to the original source chunks to assist in generating the rephrased version, but ensure that the final output text meets the requirements.
+Use English as output language.
+
+---Goal---
+To generate a version of the text that is rephrased and conveys the same meaning as the original entity and relationship descriptions, while:
+1. Following a clear logical flow and structure
+2. Establishing proper cause-and-effect relationships
+3. Ensuring temporal and sequential consistency
+4. Creating smooth transitions between ideas using conjunctions and appropriate linking words like "firstly," "however," "therefore," etc.
+
+---Instructions---
+1. Analyze the provided ENTITIES, RELATIONSHIPS, and ORIGINAL SOURCE CHUNKS carefully to identify:
+   - Key concepts and their hierarchies
+   - Temporal sequences and chronological order
+   - Cause-and-effect relationships
+   - Dependencies between different elements
+
+2. Use the ORIGINAL SOURCE CHUNKS only as grounding context. Rephrase around facts, measurements, procedures, comparisons, and relationships stated in the chunk content, and do not introduce facts unsupported by the ENTITIES, RELATIONSHIPS, or ORIGINAL SOURCE CHUNKS.
+
+3. Treat `Source:` labels only as lightweight provenance labels. Do not include source names, file names, chunk ids, or metadata in the rephrased text unless they are part of the scientific content itself.
+
+4. Rephrase the text while maintaining:
+   - Logical flow and progression
+   - Clear connections between ideas
+   - Proper context and background
+   - Coherent narrative structure
+
+5. Review and refine the text to ensure:
+   - Logical consistency throughout
+   - Clear cause-and-effect relationships
+
+################
+-ORIGINAL SOURCE CHUNKS-
+################
+{source_chunks}
+
+################
+-ENTITIES-
+################
+{entities}
+
+################
+-RELATIONSHIPS-
+################
+{relationships}
+
+"""
+
+ANSWER_REPHRASING_SOURCE_CONTEXT_ZH: str = """---角色---
+你是一位NLP专家，负责根据下面提供的实体和关系生成逻辑结构清晰且连贯的文本重述版本。你可以参考原始来源片段辅助生成，但需要确保最终输出的文本符合要求。
+使用中文作为输出语言。
+
+---目标---
+生成文本的重述版本，使其传达与原始实体和关系描述相同的含义，同时：
+1. 遵循清晰的逻辑流和结构
+2. 建立适当的因果关系
+3. 确保时间和顺序的一致性
+4. 使用连词和适当的连接词(如"首先"、"然而"、"因此"等)创造流畅的过渡
+
+---说明---
+1. 仔细分析提供的实体、关系和原始来源片段，以识别：
+    - 关键概念及其层级关系
+    - 时间序列和时间顺序
+    - 因果关系
+    - 不同元素之间的依赖关系
+2. 原始来源片段只作为证据上下文使用；请围绕片段内容中的事实、数值、过程、比较和关系重述，不要引入实体、关系或原始来源片段均不支持的信息。
+3. `Source:` 标签只作为轻量来源标记；除非来源名、文件名、chunk id 或元数据本身属于科学内容，否则不要把它们写入重述文本。
+4. 重述文本时保持：
+    - 逻辑流畅
+    - 概念之间的清晰联系
+    - 适当的上下文和背景
+    - 连贯的叙述结构
+5. 检查和完善文本以确保：
+    - 整体逻辑一致性
+    - 清晰的因果关系
+
+################
+-原始来源片段-
+################
+{source_chunks}
+
+################
+-实体-
+################
+{entities}
+
+################
+-关系-
+################
+{relationships}
+
+"""
+
 ANSWER_REPHRASING_EN: str = """---Role---
 You are an NLP expert responsible for generating a logically structured and coherent rephrased version of the TEXT based on ENTITIES and RELATIONSHIPS provided below.
 Use English as output language.
@@ -247,11 +341,15 @@ AGGREGATED_GENERATION_PROMPT = {
     "en": {
         "ANSWER_REPHRASING": ANSWER_REPHRASING_EN + REQUIREMENT_EN,
         "ANSWER_REPHRASING_CONTEXT": ANSWER_REPHRASING_CONTEXT_EN + REQUIREMENT_EN,
+        "ANSWER_REPHRASING_SOURCE_CONTEXT": ANSWER_REPHRASING_SOURCE_CONTEXT_EN
+        + REQUIREMENT_EN,
         "QUESTION_GENERATION": QUESTION_GENERATION_EN,
     },
     "zh": {
         "ANSWER_REPHRASING": ANSWER_REPHRASING_ZH + REQUIREMENT_ZH,
         "ANSWER_REPHRASING_CONTEXT": ANSWER_REPHRASING_CONTEXT_ZH + REQUIREMENT_ZH,
+        "ANSWER_REPHRASING_SOURCE_CONTEXT": ANSWER_REPHRASING_SOURCE_CONTEXT_ZH
+        + REQUIREMENT_ZH,
         "QUESTION_GENERATION": QUESTION_GENERATION_ZH,
     },
 }

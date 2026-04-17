@@ -6,6 +6,7 @@ from graphgen.templates import AGGREGATED_GENERATION_PROMPT
 from graphgen.utils import detect_main_language, logger
 
 from .context_utils import build_grounded_context
+from .source_context import SourceChunkContextBuilder
 
 
 class AggregatedGenerator(BaseGenerator):
@@ -16,9 +17,27 @@ class AggregatedGenerator(BaseGenerator):
     2. question generation: Generate relevant questions based on the rephrased text.
     """
 
+    def __init__(
+        self,
+        llm_client,
+        *,
+        include_source_chunks_in_prompt: bool = False,
+        source_chunk_storages: list[Any] | None = None,
+        source_chunks_per_entity: int = 3,
+    ):
+        super().__init__(llm_client)
+        self.include_source_chunks_in_prompt = bool(include_source_chunks_in_prompt)
+        self.source_chunk_context_builder = SourceChunkContextBuilder(
+            source_chunk_storages,
+            chunks_per_entity=source_chunks_per_entity,
+        )
+
     @staticmethod
     def build_prompt(
-        batch: tuple[list[tuple[str, dict]], list[tuple[Any, Any, dict]]]
+        batch: tuple[list[tuple[str, dict]], list[tuple[Any, Any, dict]]],
+        *,
+        include_source_chunks_in_prompt: bool = False,
+        source_chunk_context_builder: SourceChunkContextBuilder | None = None,
     ) -> str:
         """
         Build prompts for REPHRASE.
@@ -30,23 +49,23 @@ class AggregatedGenerator(BaseGenerator):
             include_visual_metadata=True,
         )
         language = detect_main_language(entities_str + relations_str)
-
-        # TODO: configure add_context
-        #     if add_context:
-        #         original_ids = [
-        #             node["source_id"].split("<SEP>")[0] for node in _process_nodes
-        #         ] + [edge[2]["source_id"].split("<SEP>")[0] for edge in _process_edges]
-        #         original_ids = list(set(original_ids))
-        #         original_text = await text_chunks_storage.get_by_ids(original_ids)
-        #         original_text = "\n".join(
-        #             [
-        #                 f"{index + 1}. {text['content']}"
-        #                 for index, text in enumerate(original_text)
-        #             ]
-        #         )
-        prompt = AGGREGATED_GENERATION_PROMPT[language]["ANSWER_REPHRASING"].format(
-            entities=entities_str, relationships=relations_str
+        source_chunks = (
+            source_chunk_context_builder.build(batch)
+            if include_source_chunks_in_prompt and source_chunk_context_builder
+            else ""
         )
+        if source_chunks:
+            prompt = AGGREGATED_GENERATION_PROMPT[language][
+                "ANSWER_REPHRASING_SOURCE_CONTEXT"
+            ].format(
+                source_chunks=source_chunks,
+                entities=entities_str,
+                relationships=relations_str,
+            )
+        else:
+            prompt = AGGREGATED_GENERATION_PROMPT[language]["ANSWER_REPHRASING"].format(
+                entities=entities_str, relationships=relations_str
+            )
         return prompt
 
     @staticmethod
@@ -100,7 +119,11 @@ class AggregatedGenerator(BaseGenerator):
         :param batch
         :return: QA pairs
         """
-        rephrasing_prompt = self.build_prompt(batch)
+        rephrasing_prompt = self.build_prompt(
+            batch,
+            include_source_chunks_in_prompt=self.include_source_chunks_in_prompt,
+            source_chunk_context_builder=self.source_chunk_context_builder,
+        )
         response = await self.llm_client.generate_answer(rephrasing_prompt)
         context = self.parse_rephrased_text(response)
         if not context:

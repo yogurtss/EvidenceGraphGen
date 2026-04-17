@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Tuple
 
 from graphgen.bases import BaseOperator
@@ -21,6 +22,10 @@ class StructureAnalyzeService(BaseOperator):
 
         for doc in batch:
             source_trace_id = doc["_trace_id"]
+            source_path = doc.get("source_path") or doc.get("path") or ""
+            source_file = doc.get("source_file") or (
+                Path(str(source_path)).name if source_path else ""
+            )
             components = normalize_components(doc)
 
             result = {
@@ -31,6 +36,8 @@ class StructureAnalyzeService(BaseOperator):
                     doc,
                     {
                         "source_type": doc.get("type", "text"),
+                        "source_path": str(source_path) if source_path else "",
+                        "source_file": source_file,
                     },
                 ),
             }

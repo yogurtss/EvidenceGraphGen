@@ -58,3 +58,8 @@ nodes:
     params:
       method: vqa
       data_format: ChatML
+      # Optional source grounding context for generator prompts.
+      # include_source_chunks_in_prompt: false
+      # source_chunks_per_entity: 3
+      # source_chunk_namespaces:
+      #   - chunk

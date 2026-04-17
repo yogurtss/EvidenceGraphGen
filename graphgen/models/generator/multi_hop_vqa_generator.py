@@ -14,11 +14,20 @@ class MultiHopVQAGenerator(MultiHopGenerator):
             list[tuple[str, dict]], list[tuple[Any, Any, dict] | tuple[Any, Any, Any]]
         ],
     ) -> list[dict]:
-        qa_pairs = await BaseGenerator.generate(self, batch)
+        prompt = self.build_prompt(
+            batch,
+            include_source_chunks_in_prompt=self.include_source_chunks_in_prompt,
+            source_chunk_context_builder=self.source_chunk_context_builder,
+        )
+        img_path = self.extract_visual_asset_path(batch)
+        response = await self.llm_client.generate_answer(
+            prompt,
+            image_path=img_path or None,
+        )
+        qa_pairs = self.parse_response(response)
         if not qa_pairs:
             return []
 
-        img_path = self.extract_visual_asset_path(batch)
         if img_path:
             for qa in qa_pairs:
                 qa["img_path"] = img_path

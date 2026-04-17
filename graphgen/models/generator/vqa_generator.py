@@ -2,28 +2,59 @@ import re
 from typing import Any
 
 from graphgen.bases import BaseGenerator
-from graphgen.templates import VQA_GENERATION_PROMPT
+from graphgen.templates import (
+    VQA_GENERATION_PROMPT,
+    VQA_GENERATION_PROMPT_WITH_SOURCE_CONTEXT,
+)
 from graphgen.utils import detect_main_language, logger
 
 from .context_utils import build_grounded_context
+from .source_context import SourceChunkContextBuilder
 
 
 class VQAGenerator(BaseGenerator):
-    def __init__(self, llm_client):
+    def __init__(
+        self,
+        llm_client,
+        *,
+        include_source_chunks_in_prompt: bool = False,
+        source_chunk_storages: list[Any] | None = None,
+        source_chunks_per_entity: int = 3,
+    ):
         super().__init__(llm_client)
+        self.include_source_chunks_in_prompt = bool(include_source_chunks_in_prompt)
+        self.source_chunk_context_builder = SourceChunkContextBuilder(
+            source_chunk_storages,
+            chunks_per_entity=source_chunks_per_entity,
+        )
 
     @staticmethod
     def build_prompt(
-        batch: tuple[list[tuple[str, dict]], list[tuple[Any, Any, dict]]]
+        batch: tuple[list[tuple[str, dict]], list[tuple[Any, Any, dict]]],
+        *,
+        include_source_chunks_in_prompt: bool = False,
+        source_chunk_context_builder: SourceChunkContextBuilder | None = None,
     ) -> str:
         entities_str, relationships_str = build_grounded_context(
             batch,
             include_visual_metadata=True,
         )
         language = detect_main_language(entities_str + relationships_str)
-        prompt = VQA_GENERATION_PROMPT[language].format(
-            entities=entities_str, relationships=relationships_str
+        source_chunks = (
+            source_chunk_context_builder.build(batch)
+            if include_source_chunks_in_prompt and source_chunk_context_builder
+            else ""
         )
+        if source_chunks:
+            prompt = VQA_GENERATION_PROMPT_WITH_SOURCE_CONTEXT[language].format(
+                entities=entities_str,
+                relationships=relationships_str,
+                source_chunks=source_chunks,
+            )
+        else:
+            prompt = VQA_GENERATION_PROMPT[language].format(
+                entities=entities_str, relationships=relationships_str
+            )
         return prompt
 
     @staticmethod
@@ -68,9 +99,7 @@ class VQAGenerator(BaseGenerator):
         raw_text.extend([str(edge[0]) for edge in edges])
         raw_text.extend([str(edge[1]) for edge in edges])
         raw_text.extend([edge[2].get("description", "") for edge in edges])
-        raw_text.extend(
-            build_grounded_context(batch, include_visual_metadata=True)
-        )
+        raw_text.extend(build_grounded_context(batch, include_visual_metadata=True))
 
         keyword_pattern = re.compile(r"[\u4e00-\u9fff]{2,}|[a-zA-Z][a-zA-Z0-9_\-/]{2,}")
         return {token.lower() for token in keyword_pattern.findall("\n".join(raw_text))}
@@ -119,7 +148,11 @@ class VQAGenerator(BaseGenerator):
         :param batch
         :return: QA pairs
         """
-        prompt = self.build_prompt(batch)
+        prompt = self.build_prompt(
+            batch,
+            include_source_chunks_in_prompt=self.include_source_chunks_in_prompt,
+            source_chunk_context_builder=self.source_chunk_context_builder,
+        )
         image_path = self.extract_visual_asset_path(batch)
         response = await self.llm_client.generate_answer(
             prompt, image_path=image_path or None

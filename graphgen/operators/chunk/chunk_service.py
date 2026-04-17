@@ -1,5 +1,6 @@
 import os
 from functools import lru_cache
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional, Tuple, Union
 
 from graphgen.bases import BaseOperator
@@ -73,6 +74,11 @@ class ChunkService(BaseOperator):
         meta_updates = {}
         for doc in batch:
             doc_type = doc.get("type")
+            source_trace_id = doc.get("_trace_id", "")
+            source_path = doc.get("source_path") or doc.get("path") or ""
+            source_file = doc.get("source_file") or (
+                Path(str(source_path)).name if source_path else ""
+            )
             if doc_type == "text":
                 doc_language = detect_main_language(doc["content"])
                 text_chunks = split_chunks(
@@ -89,6 +95,9 @@ class ChunkService(BaseOperator):
                             if self.tokenizer_instance
                             else len(text_chunk),
                             "language": doc_language,
+                            "source_trace_id": source_trace_id,
+                            "source_path": str(source_path) if source_path else "",
+                            "source_file": source_file,
                         },
                     }
                     chunk["_trace_id"] = self.get_trace_id(chunk)
@@ -102,6 +111,11 @@ class ChunkService(BaseOperator):
                 input_trace_id = data.pop("_trace_id")
                 content = data.pop("content") if "content" in data else ""
                 doc_type = data.pop("type")
+                data.setdefault("source_trace_id", source_trace_id)
+                if source_path:
+                    data.setdefault("source_path", str(source_path))
+                if source_file:
+                    data.setdefault("source_file", source_file)
                 chunk = {"content": content, "type": doc_type, "metadata": data}
                 chunk["_trace_id"] = self.get_trace_id(chunk)
                 results.append(chunk)

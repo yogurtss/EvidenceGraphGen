@@ -9,6 +9,22 @@ from graphgen.common.init_storage import init_storage
 from graphgen.utils import logger, run_concurrent
 
 
+def _to_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def _normalize_namespaces(value) -> list[str]:
+    if value is None:
+        return ["chunk", "tree_chunk"]
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
 class GenerateService(BaseOperator):
     """
     Generate question-answer pairs from selected subgraphs or direct graph slices.
@@ -33,6 +49,38 @@ class GenerateService(BaseOperator):
         self.method = method
         self.data_format = data_format
         self.generator_map = {}
+        self.include_source_chunks_in_prompt = _to_bool(
+            generate_kwargs.get("include_source_chunks_in_prompt", False)
+        )
+        self.source_chunks_per_entity = int(
+            generate_kwargs.get("source_chunks_per_entity", 3)
+        )
+        self.source_chunk_namespaces = _normalize_namespaces(
+            generate_kwargs.get("source_chunk_namespaces")
+        )
+        self.source_chunk_storages = []
+        if self.include_source_chunks_in_prompt:
+            for namespace in self.source_chunk_namespaces:
+                try:
+                    self.source_chunk_storages.append(
+                        init_storage(
+                            backend=kv_backend,
+                            working_dir=working_dir,
+                            namespace=namespace,
+                        )
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "Failed to initialize source chunk namespace %s: %s",
+                        namespace,
+                        exc,
+                    )
+
+        source_context_kwargs = {
+            "include_source_chunks_in_prompt": self.include_source_chunks_in_prompt,
+            "source_chunk_storages": self.source_chunk_storages,
+            "source_chunks_per_entity": self.source_chunks_per_entity,
+        }
 
         if self.method == "atomic":
             from graphgen.models import AtomicGenerator
@@ -41,15 +89,24 @@ class GenerateService(BaseOperator):
         elif self.method == "aggregated":
             from graphgen.models import AggregatedGenerator
 
-            self.generator = AggregatedGenerator(self.llm_client)
+            self.generator = AggregatedGenerator(
+                self.llm_client,
+                **source_context_kwargs,
+            )
         elif self.method == "multi_hop":
             from graphgen.models import MultiHopGenerator
 
-            self.generator = MultiHopGenerator(self.llm_client)
+            self.generator = MultiHopGenerator(
+                self.llm_client,
+                **source_context_kwargs,
+            )
         elif self.method == "multi_hop_vqa":
             from graphgen.models import MultiHopVQAGenerator
 
-            self.generator = MultiHopVQAGenerator(self.llm_client)
+            self.generator = MultiHopVQAGenerator(
+                self.llm_client,
+                **source_context_kwargs,
+            )
         elif self.method == "atomic_vqa":
             from graphgen.models import AtomicVQAGenerator
 
@@ -61,11 +118,17 @@ class GenerateService(BaseOperator):
         elif self.method == "vqa":
             from graphgen.models import VQAGenerator
 
-            self.generator = VQAGenerator(self.llm_client)
+            self.generator = VQAGenerator(
+                self.llm_client,
+                **source_context_kwargs,
+            )
         elif self.method == "aggregated_vqa":
             from graphgen.models import AggregatedVQAGenerator
 
-            self.generator = AggregatedVQAGenerator(self.llm_client)
+            self.generator = AggregatedVQAGenerator(
+                self.llm_client,
+                **source_context_kwargs,
+            )
         elif self.method == "auto":
             from graphgen.models import (
                 AtomicVQAGenerator,
@@ -77,9 +140,18 @@ class GenerateService(BaseOperator):
             self.generator = None
             self.generator_map = {
                 "atomic": AtomicVQAGenerator(self.llm_client),
-                "aggregated": AggregatedVQAGenerator(self.llm_client),
-                "multi_hop": MultiHopVQAGenerator(self.llm_client),
-                "vqa": VQAGenerator(self.llm_client),
+                "aggregated": AggregatedVQAGenerator(
+                    self.llm_client,
+                    **source_context_kwargs,
+                ),
+                "multi_hop": MultiHopVQAGenerator(
+                    self.llm_client,
+                    **source_context_kwargs,
+                ),
+                "vqa": VQAGenerator(
+                    self.llm_client,
+                    **source_context_kwargs,
+                ),
             }
         elif self.method == "multi_choice":
             from graphgen.models import MultiChoiceGenerator

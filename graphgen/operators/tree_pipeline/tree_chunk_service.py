@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Optional, Tuple
 
 from graphgen.bases import BaseOperator
@@ -36,6 +37,17 @@ class TreeChunkService(BaseOperator):
         for doc in batch:
             input_trace_id = doc["_trace_id"]
             source_trace_id: Optional[str] = doc.get("source_trace_id")
+            doc_metadata = dict(doc.get("metadata", {}))
+            source_path = (
+                doc_metadata.get("source_path")
+                or doc_metadata.get("path")
+                or doc.get("source_path")
+                or doc.get("path")
+                or ""
+            )
+            source_file = doc_metadata.get("source_file") or (
+                Path(str(source_path)).name if source_path else ""
+            )
             for node in doc.get("tree_nodes", []):
                 content = node.get("content", "")
                 node_type = node.get("node_type", "text")
@@ -63,6 +75,8 @@ class TreeChunkService(BaseOperator):
                         "node_id": node.get("node_id"),
                         "parent_id": node.get("parent_id"),
                         "source_trace_id": source_trace_id,
+                        "source_path": str(source_path) if source_path else "",
+                        "source_file": source_file,
                     }
                     metadata.update(node_metadata)
                     row = {

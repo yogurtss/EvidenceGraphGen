@@ -66,3 +66,32 @@ Output:
 """
 
 MULTI_HOP_GENERATION_PROMPT = {"en": TEMPLATE_EN, "zh": TEMPLATE_ZH}
+
+SOURCE_CONTEXT_SECTION_ZH: str = """补充证据规则：
+下方原始来源片段是对应实体的上下文证据。请围绕片段内容中的事实、数值、过程、比较和关系构造多跳推理链。`Source:` 标签只作为轻量来源标记。不要围绕来源名、文件名、chunk id 或元数据提问。不要引入实体、关系或来源片段均不支持的信息。
+
+--原始来源片段--
+{source_chunks}
+"""
+
+SOURCE_CONTEXT_SECTION_EN: str = """Additional grounding rule:
+The original source chunks below are contextual evidence for the listed entities. Build the multi-hop reasoning chain from facts, measurements, procedures, comparisons, and relationships stated in the chunk content. Treat `Source:` labels only as lightweight provenance labels. Do not ask about source names, file names, chunk ids, or metadata. Do not introduce facts unsupported by the entities, relations, or source chunks.
+
+--Original Source Chunks--
+{source_chunks}
+"""
+
+TEMPLATE_WITH_SOURCE_CONTEXT_ZH: str = TEMPLATE_ZH.replace(
+    "\n输出：",
+    f"\n{SOURCE_CONTEXT_SECTION_ZH}\n输出：",
+)
+
+TEMPLATE_WITH_SOURCE_CONTEXT_EN: str = TEMPLATE_EN.replace(
+    "\nOutput:",
+    f"\n{SOURCE_CONTEXT_SECTION_EN}\nOutput:",
+)
+
+MULTI_HOP_GENERATION_PROMPT_WITH_SOURCE_CONTEXT = {
+    "en": TEMPLATE_WITH_SOURCE_CONTEXT_EN,
+    "zh": TEMPLATE_WITH_SOURCE_CONTEXT_ZH,
+}

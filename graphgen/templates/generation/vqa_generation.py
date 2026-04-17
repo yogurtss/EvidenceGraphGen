@@ -137,3 +137,44 @@ TEMPLATE_ZH: str = """---角色---
 """
 
 VQA_GENERATION_PROMPT = {"en": TEMPLATE_EN, "zh": TEMPLATE_ZH}
+
+SOURCE_CONTEXT_SECTION_EN: str = """Additional grounding rule:
+- The original source chunks below are contextual evidence for the listed entities.
+- Generate questions and answers from the facts, measurements, procedures, comparisons, and relationships stated in the chunk content.
+- Treat `Source:` labels only as lightweight provenance labels. Do not ask about source names, file names, chunk ids, or metadata.
+- Do not introduce facts unsupported by the entities, relationships, or source chunks.
+
+################
+-Original Source Chunks-
+################
+{source_chunks}
+################
+"""
+
+SOURCE_CONTEXT_SECTION_ZH: str = """补充证据规则：
+- 下方原始来源片段是对应实体的上下文证据。
+- 请围绕片段内容中的事实、数值、过程、比较和关系生成问答。
+- `Source:` 标签只作为轻量来源标记；不要围绕来源名、文件名、chunk id 或元数据提问。
+- 不要引入实体、关系或来源片段均不支持的信息。
+
+################
+-原始来源片段-
+################
+{source_chunks}
+################
+"""
+
+TEMPLATE_WITH_SOURCE_CONTEXT_EN: str = TEMPLATE_EN.replace(
+    "\nPlease directly output the generated questions and answers",
+    f"\n{SOURCE_CONTEXT_SECTION_EN}\nPlease directly output the generated questions and answers",
+)
+
+TEMPLATE_WITH_SOURCE_CONTEXT_ZH: str = TEMPLATE_ZH.replace(
+    "\n请直接输出生成的问题和答案",
+    f"\n{SOURCE_CONTEXT_SECTION_ZH}\n请直接输出生成的问题和答案",
+)
+
+VQA_GENERATION_PROMPT_WITH_SOURCE_CONTEXT = {
+    "en": TEMPLATE_WITH_SOURCE_CONTEXT_EN,
+    "zh": TEMPLATE_WITH_SOURCE_CONTEXT_ZH,
+}

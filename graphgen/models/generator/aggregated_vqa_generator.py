@@ -6,7 +6,11 @@ class AggregatedVQAGenerator(AggregatedGenerator):
     """Aggregated two-step generator with VQA-compatible image output."""
 
     async def generate(self, batch):
-        rephrasing_prompt = self.build_prompt(batch)
+        rephrasing_prompt = self.build_prompt(
+            batch,
+            include_source_chunks_in_prompt=self.include_source_chunks_in_prompt,
+            source_chunk_context_builder=self.source_chunk_context_builder,
+        )
         img_path = self.extract_visual_asset_path(batch)
         response = await self.llm_client.generate_answer(
             rephrasing_prompt, image_path=img_path or None

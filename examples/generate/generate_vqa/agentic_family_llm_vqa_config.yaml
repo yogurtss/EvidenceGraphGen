@@ -86,3 +86,8 @@ nodes:
     params:
       method: auto
       data_format: ChatML
+      # Optional source grounding context for vqa/aggregated/multi_hop prompts.
+      # include_source_chunks_in_prompt: false
+      # source_chunks_per_entity: 3
+      # source_chunk_namespaces:
+      #   - tree_chunk
