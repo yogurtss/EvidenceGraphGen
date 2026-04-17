@@ -1,8 +1,6 @@
 import copy
 import json
-import random
 import re
-from collections import Counter
 from typing import Any, Tuple
 
 from graphgen.bases import BaseKVStorage, BaseLLMWrapper, BaseOperator
@@ -35,25 +33,6 @@ class GenerateService(BaseOperator):
         self.method = method
         self.data_format = data_format
         self.generator_map = {}
-        self.include_source_chunk_context = bool(
-            generate_kwargs.get("include_source_chunk_context", False)
-        )
-        self.source_chunk_context_count = max(
-            1, int(generate_kwargs.get("source_chunk_context_count", 3))
-        )
-        self.source_chunk_max_chars = max(
-            100, int(generate_kwargs.get("source_chunk_max_chars", 600))
-        )
-        self.chunk_storage: BaseKVStorage = init_storage(
-            backend=kv_backend,
-            working_dir=working_dir,
-            namespace="chunk",
-        )
-        self.tree_chunk_storage: BaseKVStorage = init_storage(
-            backend=kv_backend,
-            working_dir=working_dir,
-            namespace="tree_chunk",
-        )
 
         if self.method == "atomic":
             from graphgen.models import AtomicGenerator
@@ -151,10 +130,7 @@ class GenerateService(BaseOperator):
                 unit="batch",
             )
         else:
-            triples = [
-                self._build_generation_triple(item["nodes"], item["edges"])
-                for item in batch
-            ]
+            triples = [(item["nodes"], item["edges"]) for item in batch]
             results = run_concurrent(
                 self.generator.generate,
                 triples,
@@ -337,7 +313,7 @@ class GenerateService(BaseOperator):
                             "edges": edges,
                         },
                         "generator_keys": generator_keys,
-                        "triple": self._build_generation_triple(nodes, edges),
+                        "triple": (nodes, edges),
                         "max_qas": max_qas,
                     }
                 )
@@ -581,94 +557,6 @@ class GenerateService(BaseOperator):
     @staticmethod
     def _normalize_signature(text: str) -> str:
         return re.sub(r"\s+", " ", str(text or "").strip().lower())
-
-    @staticmethod
-    def _split_source_ids(value: Any) -> list[str]:
-        if not value:
-            return []
-        return [part.strip() for part in str(value).split("<SEP>") if part.strip()]
-
-    def _build_generation_triple(
-        self,
-        nodes: list[tuple[str, dict]],
-        edges: list[tuple[Any, Any, dict]],
-    ) -> tuple[list[tuple[str, dict]], list[tuple[Any, Any, dict]]]:
-        if not self.include_source_chunk_context:
-            return nodes, edges
-        source_nodes = self._build_source_chunk_prompt_nodes(nodes, edges)
-        if not source_nodes:
-            return nodes, edges
-        return [*nodes, *source_nodes], edges
-
-    def _build_source_chunk_prompt_nodes(
-        self,
-        nodes: list[tuple[str, dict]],
-        edges: list[tuple[Any, Any, dict]],
-    ) -> list[tuple[str, dict]]:
-        source_ids = self._collect_ranked_source_ids(nodes, edges)
-        if not source_ids:
-            return []
-        selected_ids = source_ids[: self.source_chunk_context_count]
-        prompt_nodes = []
-        for index, source_id in enumerate(selected_ids, start=1):
-            content = self._get_source_chunk_content(source_id)
-            if not content:
-                continue
-            prompt_nodes.append(
-                (
-                    f"__SOURCE_CHUNK_{index}",
-                    {
-                        "entity_type": "SOURCE_CHUNK",
-                        "entity_name": source_id,
-                        "description": content[: self.source_chunk_max_chars],
-                        "source_id": source_id,
-                    },
-                )
-            )
-        return prompt_nodes
-
-    def _collect_ranked_source_ids(
-        self,
-        nodes: list[tuple[str, dict]],
-        edges: list[tuple[Any, Any, dict]],
-    ) -> list[str]:
-        counter: Counter[str] = Counter()
-        for _, node_data in nodes:
-            for source_id in self._split_source_ids(node_data.get("source_id")):
-                if self._get_source_chunk_content(source_id):
-                    counter[source_id] += 1
-        for edge in edges:
-            if len(edge) < 3:
-                continue
-            edge_data = edge[2] if isinstance(edge[2], dict) else {}
-            for source_id in self._split_source_ids(edge_data.get("source_id")):
-                if self._get_source_chunk_content(source_id):
-                    counter[source_id] += 1
-
-        if not counter:
-            return []
-
-        same_source_ids = [source_id for source_id, freq in counter.items() if freq > 1]
-        other_source_ids = [source_id for source_id, freq in counter.items() if freq <= 1]
-        random.shuffle(same_source_ids)
-        random.shuffle(other_source_ids)
-        ranked = sorted(
-            same_source_ids, key=lambda source_id: counter[source_id], reverse=True
-        )
-        if len(ranked) >= self.source_chunk_context_count:
-            return ranked
-        return [*ranked, *other_source_ids]
-
-    def _get_source_chunk_content(self, source_id: str) -> str:
-        for storage in (self.tree_chunk_storage, self.chunk_storage):
-            record = storage.get_by_id(source_id)
-            if isinstance(record, dict):
-                content = str(record.get("content", "")).strip()
-                if content:
-                    return content
-            elif isinstance(record, str) and record.strip():
-                return record.strip()
-        return ""
 
     def _dedupe_qa_pairs(
         self,
