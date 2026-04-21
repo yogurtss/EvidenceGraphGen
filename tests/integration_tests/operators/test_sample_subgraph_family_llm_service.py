@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import patch
@@ -5,6 +6,13 @@ from unittest.mock import patch
 from graphgen.operators.generate.generate_service import GenerateService
 from graphgen.operators.sample_subgraph_family_llm import (
     SampleSubgraphFamilyLLMService,
+)
+from graphgen.models.subgraph_sampler.visual_core_family_llm.models import (
+    FamilyCandidatePoolItem,
+    FamilySessionState,
+)
+from graphgen.models.subgraph_sampler.visual_core_family_llm.optimized_sampler import (
+    OptimizedVisualCoreFamilyLLMSubgraphSampler,
 )
 from graphgen.storage import NetworkXStorage
 
@@ -230,6 +238,87 @@ class _DummyVisualCoreLLM:
             for line in candidate_lines
             if line.startswith("node=")
         }
+
+
+class _DummyOptimizedVisualCoreLLM(_DummyVisualCoreLLM):
+    def __init__(self):
+        super().__init__()
+        self.intent_counts = {}
+        self.shared_intent_count = 0
+        self.candidate_line_counts = []
+        self.candidate_lines_seen = []
+
+    async def generate_answer(self, prompt: str, history=None, **extra):
+        if "ROLE: VisualCoreSharedIntentPlanner" in prompt:
+            return self._shared_intent_response(prompt)
+        return await super().generate_answer(prompt, history=history, **extra)
+
+    def _shared_intent_response(self, prompt: str) -> str:
+        target = int(prompt.split("Target intent count: ", 1)[1].splitlines()[0])
+        self.shared_intent_count += 1
+        self.intent_counts["shared"] = target
+        return json.dumps(
+            {
+                "intents": [
+                    {
+                        "intent": f"shared optimized intent {index + 1}",
+                        "technical_focus": "timing",
+                        "forbidden_patterns": ["decoder"],
+                        "image_grounding_summary": "The figure grounds a timing path.",
+                        "bootstrap_rationale": "Sample a real path from the image seed through graph entities.",
+                    }
+                    for index in range(target)
+                ]
+            }
+        )
+
+    def _selector_response(self, prompt: str) -> str:
+        family = self._extract_family(prompt)
+        state = self._extract_json_between(prompt, "Current state:\n", "\nCandidate lines:\n")
+        candidate_lines = self._extract_json_after(prompt, "Candidate lines:\n")
+        self.candidate_line_counts.append(len(candidate_lines))
+        self.candidate_lines_seen.extend(candidate_lines)
+        assert all("candidate_uid" not in line for line in candidate_lines)
+        assert all("source_id" not in line and "source=" not in line for line in candidate_lines)
+        self.selector_calls[family] = self.selector_calls.get(family, 0) + 1
+        selected_nodes = set(state.get("selected_node_ids", []))
+        candidate_node_ids = self._candidate_node_ids(candidate_lines)
+        if family in {"atomic", "aggregated"}:
+            for target in ("latency_metric", "row_activation"):
+                if target not in selected_nodes and target in candidate_node_ids:
+                    return json.dumps(
+                        {
+                            "decision": "select_candidate",
+                            "candidate_node_id": target,
+                            "reason": f"Select {target} for optimized {family}.",
+                            "confidence": 0.94,
+                        }
+                    )
+        if family == "multi_hop":
+            for target in ("latency_metric", "row_activation", "random_access_perf"):
+                if target not in selected_nodes and target in candidate_node_ids:
+                    return json.dumps(
+                        {
+                            "decision": "select_candidate",
+                            "candidate_node_id": target,
+                            "reason": f"Select {target} for optimized multi-hop.",
+                            "confidence": 0.94,
+                        }
+                    )
+        return json.dumps({"decision": "stop_selection", "reason": "no candidate"})
+
+    def _termination_response(self, prompt: str) -> str:
+        family = self._extract_family(prompt)
+        state = self._extract_json_between(prompt, "Current state:\n", "\nLast selected candidate:\n")
+        candidate_pool = self._extract_json_after(prompt, "Current candidate pool:\n")
+        self.candidate_line_counts.append(len(candidate_pool))
+        self.candidate_lines_seen.extend(candidate_pool)
+        selected_nodes = set(state.get("selected_node_ids", []))
+        if family in {"atomic", "aggregated"} and "row_activation" in selected_nodes:
+            return self._decision_json("accept", True, "accepted", 0.91)
+        if family == "multi_hop" and "random_access_perf" in selected_nodes:
+            return self._decision_json("accept", True, "accepted", 0.93)
+        return self._decision_json("continue", False, "continue", 0.72)
 
 
 class _EmptyBootstrapLLM(_DummyVisualCoreLLM):
@@ -824,6 +913,254 @@ def test_generate_service_prefers_target_qa_count_for_family_llm_subgraphs(
         assert visualization_trace["graph_catalog"]["nodes"]
         assert visualization_trace["graph_catalog"]["edges"]
     assert qa_family_counts == {"atomic": 1, "aggregated": 2, "multi_hop": 1}
+
+
+def test_optimized_family_llm_sampler_generates_target_subgraphs_without_virtual_image(
+    tmp_path: Path,
+):
+    graph_storage = NetworkXStorage(working_dir=str(tmp_path / "cache"), namespace="graph")
+    _build_visual_core_graph(graph_storage)
+    llm = _DummyOptimizedVisualCoreLLM()
+
+    def _init_storage(backend: str, working_dir: str, namespace: str):
+        if namespace == "graph":
+            return graph_storage
+        return _DummyKV()
+
+    with patch(
+        "graphgen.operators.sample_subgraph_family_llm.sample_subgraph_family_llm_service.init_storage",
+        side_effect=_init_storage,
+    ), patch(
+        "graphgen.operators.sample_subgraph_family_llm.sample_subgraph_family_llm_service.init_llm",
+        return_value=llm,
+    ):
+        service = SampleSubgraphFamilyLLMService(
+            working_dir=str(tmp_path / "cache"),
+            kv_backend="json_kv",
+            graph_backend="networkx",
+            sampler_variant="optimized",
+            family_subgraph_targets={"atomic": 3, "aggregate": 2, "multi_hop": 2},
+            max_steps_per_family=4,
+            candidate_prompt_limit=30,
+        )
+
+    rows, _ = service.process([{"_trace_id": "optimized-family"}])
+    assert len(rows) == 1
+    result = rows[0]
+    assert result["sampler_version"] == "family_llm_optimized_v1"
+    assert llm.shared_intent_count == 1
+    assert llm.intent_counts == {"shared": 3}
+    assert len(result["selected_subgraphs"]) == 7
+    assert max(llm.candidate_line_counts) <= 30
+
+    counts = {}
+    for subgraph in result["selected_subgraphs"]:
+        family = subgraph["qa_family"]
+        counts[family] = counts.get(family, 0) + 1
+        node_ids = {node[0] for node in subgraph["nodes"]}
+        assert "image_seed" in node_ids
+        assert all("::virtual_image" not in node_id for node_id in node_ids)
+        assert subgraph["virtual_image_node_id"] == ""
+        assert subgraph["visual_core_node_ids"] == ["image_seed"]
+        assert subgraph["target_qa_count"] == 1
+        assert subgraph["sampler_version"] == "family_llm_optimized_v1"
+        if family in {"atomic", "aggregated"}:
+            assert {"image_seed", "latency_metric", "row_activation"} <= node_ids
+        if family == "multi_hop":
+            assert {
+                "image_seed",
+                "latency_metric",
+                "row_activation",
+                "random_access_perf",
+            } <= node_ids
+
+    assert counts == {"atomic": 3, "aggregated": 2, "multi_hop": 2}
+    atomic_depths = [
+        event["state"]["current_outside_depth"]
+        for event in result["family_termination_trace"]
+        if event.get("qa_family") == "atomic" and event.get("decision") == "accept"
+    ]
+    aggregated_depths = [
+        event["state"]["current_outside_depth"]
+        for event in result["family_termination_trace"]
+        if event.get("qa_family") == "aggregated" and event.get("decision") == "accept"
+    ]
+    multi_hop_depths = [
+        event["state"]["current_outside_depth"]
+        for event in result["family_termination_trace"]
+        if event.get("qa_family") == "multi_hop" and event.get("decision") == "accept"
+    ]
+    assert atomic_depths and min(atomic_depths) >= 2
+    assert aggregated_depths and min(aggregated_depths) >= 2
+    assert multi_hop_depths and min(multi_hop_depths) >= 3
+    assert all("description=" in line for line in llm.candidate_lines_seen)
+    assert all("source_id" not in line and "source=" not in line for line in llm.candidate_lines_seen)
+
+
+def test_optimized_candidate_prompt_limit_prefers_same_doc_and_is_deterministic(
+    tmp_path: Path,
+):
+    graph_storage = NetworkXStorage(working_dir=str(tmp_path / "cache"), namespace="graph")
+    graph_storage.upsert_node(
+        "image_seed",
+        {
+            "entity_type": "IMAGE",
+            "metadata": {"image_path": "figures/fig1.png", "source_file": "doc-a.md"},
+            "source_id": "doc-a-image",
+        },
+    )
+    candidates = []
+    for index in range(40):
+        node_id = f"candidate_{index}"
+        same_doc = index < 24
+        graph_storage.upsert_node(
+            node_id,
+            {
+                "entity_type": "CONCEPT",
+                "entity_name": node_id,
+                "description": f"Useful candidate {index}",
+                "metadata": {"source_file": "doc-a.md" if same_doc else "doc-b.md"},
+                "source_id": "doc-a-text" if same_doc else "doc-b-text",
+            },
+        )
+        graph_storage.upsert_edge(
+            "image_seed",
+            node_id,
+            {"relation_type": "mentions", "source_id": "doc-a-text" if same_doc else "doc-b-text"},
+        )
+        candidates.append(
+            FamilyCandidatePoolItem(
+                candidate_uid=f"image_seed:{node_id}:1:{node_id}",
+                candidate_node_id=node_id,
+                bind_from_node_id="image_seed",
+                bound_edge_pair=["image_seed", node_id],
+                hop=1,
+                depth=1,
+                relation_type="mentions",
+                entity_type="CONCEPT",
+                frontier_path=["image_seed", node_id],
+                bridge_first_hop_id=node_id,
+                evidence_summary=f"Evidence for candidate {index}",
+                edge_direction="outward",
+                score=float(index % 3) / 10,
+            )
+        )
+
+    sampler = OptimizedVisualCoreFamilyLLMSubgraphSampler(
+        graph_storage,
+        _DummyOptimizedVisualCoreLLM(),
+        candidate_prompt_limit=30,
+    )
+    seed_doc = sampler._doc_name_for_payload(graph_storage.get_node("image_seed"))
+    first = sampler._limit_candidates_for_prompt(
+        candidates,
+        seed_doc_name=seed_doc,
+        salt="stable-salt",
+    )
+    second = sampler._limit_candidates_for_prompt(
+        candidates,
+        seed_doc_name=seed_doc,
+        salt="stable-salt",
+    )
+
+    assert len(first) == 30
+    assert [item.candidate_uid for item in first] == [item.candidate_uid for item in second]
+    assert sum(
+        1 for item in first if sampler._candidate_matches_doc(item, seed_doc)
+    ) == 24
+    assert any(not sampler._candidate_matches_doc(item, seed_doc) for item in first)
+    prompt_line = sampler._candidate_prompt_line(first[0])
+    assert "description=" in prompt_line
+    assert "source_id" not in prompt_line
+    assert "source=" not in prompt_line
+
+
+def test_optimized_selector_rejects_candidate_hidden_by_prompt_cap(tmp_path: Path):
+    class _HiddenCandidateLLM:
+        async def generate_answer(self, prompt: str, history=None, **extra):
+            return json.dumps(
+                {
+                    "decision": "select_candidate",
+                    "candidate_node_id": "candidate_1",
+                    "reason": "Try selecting a hidden capped-out candidate.",
+                    "confidence": 0.9,
+                }
+            )
+
+    graph_storage = NetworkXStorage(working_dir=str(tmp_path / "cache"), namespace="graph")
+    graph_storage.upsert_node(
+        "image_seed",
+        {
+            "entity_type": "IMAGE",
+            "metadata": {"image_path": "figures/fig1.png", "source_file": "doc-a.md"},
+            "source_id": "doc-a-image",
+        },
+    )
+    candidates = []
+    for index in range(2):
+        node_id = f"candidate_{index}"
+        graph_storage.upsert_node(
+            node_id,
+            {
+                "entity_type": "CONCEPT",
+                "entity_name": node_id,
+                "metadata": {"source_file": "doc-a.md"},
+                "source_id": "doc-a-text",
+            },
+        )
+        graph_storage.upsert_edge(
+            "image_seed",
+            node_id,
+            {"relation_type": "mentions", "source_id": "doc-a-text"},
+        )
+        candidates.append(
+            FamilyCandidatePoolItem(
+                candidate_uid=f"image_seed:{node_id}:1:{node_id}",
+                candidate_node_id=node_id,
+                bind_from_node_id="image_seed",
+                bound_edge_pair=["image_seed", node_id],
+                hop=1,
+                depth=1,
+                relation_type="mentions",
+                entity_type="CONCEPT",
+                frontier_path=["image_seed", node_id],
+                bridge_first_hop_id=node_id,
+                evidence_summary=f"Evidence for {node_id}",
+                edge_direction="outward",
+                score=0.1,
+            )
+        )
+
+    sampler = OptimizedVisualCoreFamilyLLMSubgraphSampler(
+        graph_storage,
+        _HiddenCandidateLLM(),
+        candidate_prompt_limit=1,
+    )
+    state = FamilySessionState(
+        qa_family="atomic",
+        seed_node_id="image_seed",
+        image_path="figures/fig1.png",
+        intent="hidden candidate rejection",
+        visual_core_node_ids=["image_seed"],
+        selected_node_ids=["image_seed"],
+        candidate_pool=candidates,
+        frontier_node_id="image_seed",
+        path_by_node_id={"image_seed": ["image_seed"]},
+    )
+
+    result = asyncio.run(
+        sampler._select_next_candidate(
+            qa_family="atomic",
+            state=state,
+            image_path="figures/fig1.png",
+            seed_doc_name="doc-a",
+            prompt_salt="hidden-cap",
+        )
+    )
+
+    assert result.protocol_status == "error"
+    assert result.protocol_error_type == "semantic_error"
+    assert result.reason == "candidate_node_id_not_in_pool"
 
 
 def test_family_llm_sampler_atomic_falls_back_to_first_hop_without_second_hop(

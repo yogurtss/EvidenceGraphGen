@@ -84,11 +84,14 @@ class VisualCoreFamilyTraceMixin:
                 event.update(to_json_compatible(extra))
             events.append(event)
 
-        bootstrap_by_family = {
-            item.get("qa_family"): item
-            for item in family_bootstrap_trace
-            if isinstance(item, dict)
+        bootstrap_by_family: dict[str, list[dict[str, Any]]] = {
+            family: [] for family in self.FAMILY_ORDER
         }
+        for item in family_bootstrap_trace:
+            if isinstance(item, dict):
+                bootstrap_by_family.setdefault(str(item.get("qa_family", "")), []).append(
+                    item
+                )
         selection_by_family: dict[str, list[dict[str, Any]]] = {
             family: [] for family in self.FAMILY_ORDER
         }
@@ -112,8 +115,7 @@ class VisualCoreFamilyTraceMixin:
         }
 
         for qa_family in self.FAMILY_ORDER:
-            bootstrap = bootstrap_by_family.get(qa_family)
-            if bootstrap:
+            for bootstrap in bootstrap_by_family.get(qa_family, []):
                 visual_core_candidates = [
                     item
                     for item in bootstrap.get("visual_core_candidates", [])

@@ -5,7 +5,17 @@ from typing import Any
 from graphgen.models.subgraph_sampler.artifacts import JudgeScorecard, to_json_compatible
 
 DEFAULT_FAMILY_QA_TARGETS = {"atomic": 1, "aggregated": 1, "multi_hop": 1}
+DEFAULT_OPTIMIZED_FAMILY_SUBGRAPH_TARGETS = {
+    "atomic": 3,
+    "aggregated": 2,
+    "multi_hop": 2,
+}
 DEFAULT_FAMILY_MAX_DEPTHS = {"atomic": 0, "aggregated": 2, "multi_hop": 3}
+DEFAULT_OPTIMIZED_FAMILY_MAX_DEPTHS = {
+    "atomic": 2,
+    "aggregated": 2,
+    "multi_hop": 3,
+}
 MANDATORY_SCORE_KEYS = (
     "image_indispensability",
     "answer_stability",
@@ -192,6 +202,24 @@ class BootstrapStageResult:
     def to_dict(self) -> dict[str, Any]:
         return {
             "plan": self.plan.to_dict() if self.plan else None,
+            "protocol_status": self.protocol_status,
+            "protocol_error_type": self.protocol_error_type,
+            "reason": self.reason,
+            "raw_payload": to_json_compatible(self.raw_payload),
+        }
+
+
+@dataclass
+class IntentPlannerStageResult:
+    plans: list[BootstrapPlan] = field(default_factory=list)
+    protocol_status: str = "ok"
+    protocol_error_type: str = ""
+    reason: str = ""
+    raw_payload: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "plans": [plan.to_dict() for plan in self.plans],
             "protocol_status": self.protocol_status,
             "protocol_error_type": self.protocol_error_type,
             "reason": self.reason,

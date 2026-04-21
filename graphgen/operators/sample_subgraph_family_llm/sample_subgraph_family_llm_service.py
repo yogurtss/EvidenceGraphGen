@@ -5,7 +5,10 @@ from typing import Tuple
 from graphgen.bases import BaseGraphStorage, BaseLLMWrapper, BaseOperator
 from graphgen.common.init_llm import init_llm
 from graphgen.common.init_storage import init_storage
-from graphgen.models import VisualCoreFamilyLLMSubgraphSampler
+from graphgen.models import (
+    OptimizedVisualCoreFamilyLLMSubgraphSampler,
+    VisualCoreFamilyLLMSubgraphSampler,
+)
 
 
 class SampleSubgraphFamilyLLMService(BaseOperator):
@@ -15,7 +18,10 @@ class SampleSubgraphFamilyLLMService(BaseOperator):
         kv_backend: str = "rocksdb",
         graph_backend: str = "kuzu",
         family_qa_targets: dict[str, int] | None = None,
+        family_subgraph_targets: dict[str, int] | None = None,
         family_max_depths: dict[str, int] | None = None,
+        sampler_variant: str = "legacy",
+        candidate_prompt_limit: int = 30,
         max_steps_per_family: int = 4,
         max_rollbacks_per_family: int = 1,
         judge_pass_threshold: float = 0.68,
@@ -42,22 +48,41 @@ class SampleSubgraphFamilyLLMService(BaseOperator):
             raise ValueError(
                 "sample_subgraph_family_llm requires a configured synthesizer VLM."
             )
-        self.sampler = VisualCoreFamilyLLMSubgraphSampler(
-            self.graph_storage,
-            self.llm_client,
-            family_qa_targets=family_qa_targets,
-            family_max_depths=family_max_depths,
-            max_steps_per_family=max_steps_per_family,
-            max_rollbacks_per_family=max_rollbacks_per_family,
-            judge_pass_threshold=judge_pass_threshold,
-            same_source_only=same_source_only,
-            allow_bootstrap_fallback=allow_bootstrap_fallback,
-            max_protocol_retries_per_stage=max_protocol_retries_per_stage,
-            max_bootstrap_errors=max_bootstrap_errors,
-            max_selector_errors=max_selector_errors,
-            max_judge_errors=max_judge_errors,
-            min_multi_hop_outside_core_edges=min_multi_hop_outside_core_edges,
-        )
+        normalized_variant = str(sampler_variant or "legacy").strip().lower()
+        if normalized_variant == "optimized":
+            self.sampler = OptimizedVisualCoreFamilyLLMSubgraphSampler(
+                self.graph_storage,
+                self.llm_client,
+                family_subgraph_targets=family_subgraph_targets,
+                family_qa_targets=family_qa_targets,
+                family_max_depths=family_max_depths,
+                max_steps_per_family=max_steps_per_family,
+                max_rollbacks_per_family=max_rollbacks_per_family,
+                judge_pass_threshold=judge_pass_threshold,
+                same_source_only=same_source_only,
+                candidate_prompt_limit=candidate_prompt_limit,
+                max_protocol_retries_per_stage=max_protocol_retries_per_stage,
+                max_selector_errors=max_selector_errors,
+                max_judge_errors=max_judge_errors,
+                min_multi_hop_outside_core_edges=min_multi_hop_outside_core_edges,
+            )
+        else:
+            self.sampler = VisualCoreFamilyLLMSubgraphSampler(
+                self.graph_storage,
+                self.llm_client,
+                family_qa_targets=family_qa_targets,
+                family_max_depths=family_max_depths,
+                max_steps_per_family=max_steps_per_family,
+                max_rollbacks_per_family=max_rollbacks_per_family,
+                judge_pass_threshold=judge_pass_threshold,
+                same_source_only=same_source_only,
+                allow_bootstrap_fallback=allow_bootstrap_fallback,
+                max_protocol_retries_per_stage=max_protocol_retries_per_stage,
+                max_bootstrap_errors=max_bootstrap_errors,
+                max_selector_errors=max_selector_errors,
+                max_judge_errors=max_judge_errors,
+                min_multi_hop_outside_core_edges=min_multi_hop_outside_core_edges,
+            )
 
     def process(self, batch: list) -> Tuple[list, dict]:
         self.graph_storage.reload()

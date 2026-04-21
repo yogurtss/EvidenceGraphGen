@@ -53,6 +53,34 @@ def build_bootstrap_prompt(*, qa_family: str, seed_payload: dict[str, Any], visu
     )
 
 
+def build_shared_intent_planner_prompt(
+    *,
+    target_count: int,
+    seed_payload: dict[str, Any],
+    first_layer_candidates: list[str],
+    preview_candidates: list[str],
+    runtime_schema: dict[str, Any],
+) -> str:
+    return (
+        "ROLE: VisualCoreSharedIntentPlanner\n"
+        f"Target intent count: {int(target_count)}\n"
+        "Create diverse visual-core sampling intents that can be reused by atomic,"
+        " aggregated, and multi_hop samplers. First-layer image-derived entities are"
+        " selectable anchors; selector steps will later adapt each intent to the QA"
+        " family rule.\n"
+        "Family rules:\n"
+        f"{json.dumps(FAMILY_RULES, ensure_ascii=False)}\n"
+        "Return strict JSON with one key: intents. intents must be an array with"
+        " exactly the target count. Each intent object must contain keys: intent,"
+        " technical_focus, forbidden_patterns, image_grounding_summary,"
+        " bootstrap_rationale.\n"
+        f"Seed payload:\n{json.dumps(seed_payload, ensure_ascii=False)}\n"
+        f"Selectable first-layer candidate lines:\n{json.dumps(first_layer_candidates, ensure_ascii=False)}\n"
+        f"Second-layer preview lines:\n{json.dumps(preview_candidates, ensure_ascii=False)}\n"
+        f"Runtime schema:\n{json.dumps(runtime_schema, ensure_ascii=False)}\n"
+    )
+
+
 def build_selector_prompt(*, qa_family: str, state_payload: dict[str, Any], candidate_pool_payload: list[str]) -> str:
     return (
         "ROLE: FamilyNodeSelector\n"

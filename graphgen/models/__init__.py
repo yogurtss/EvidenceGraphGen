@@ -54,7 +54,11 @@ if TYPE_CHECKING:
     from .searcher.web.bing_search import BingSearch
     from .searcher.web.google_search import GoogleSearch
     from .splitter import ChineseRecursiveTextSplitter, RecursiveCharacterSplitter
-    from .subgraph_sampler import VLMSubgraphSampler, VisualCoreFamilyLLMSubgraphSampler
+    from .subgraph_sampler import (
+        OptimizedVisualCoreFamilyLLMSubgraphSampler,
+        VLMSubgraphSampler,
+        VisualCoreFamilyLLMSubgraphSampler,
+    )
     from .tokenizer import Tokenizer
 
 _import_map = {
@@ -115,6 +119,7 @@ _import_map = {
     # Splitter
     "ChineseRecursiveTextSplitter": ".splitter",
     "RecursiveCharacterSplitter": ".splitter",
+    "OptimizedVisualCoreFamilyLLMSubgraphSampler": ".subgraph_sampler",
     "VLMSubgraphSampler": ".subgraph_sampler",
     "VisualCoreFamilyLLMSubgraphSampler": ".subgraph_sampler",
     # Tokenizer

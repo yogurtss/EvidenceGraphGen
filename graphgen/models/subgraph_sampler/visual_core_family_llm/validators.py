@@ -12,6 +12,7 @@ from .models import (
     BootstrapStageResult,
     FamilySessionState,
     FamilyTerminationDecision,
+    IntentPlannerStageResult,
     MANDATORY_SCORE_KEYS,
     SelectorStageResult,
 )
@@ -91,6 +92,81 @@ def validate_bootstrap_payload(
         ),
         raw_payload=payload,
     )
+
+
+def validate_intent_planner_payload(
+    *,
+    qa_family: str,
+    payload: dict[str, Any],
+    target_count: int,
+) -> IntentPlannerStageResult:
+    if not payload:
+        return IntentPlannerStageResult(
+            protocol_status="error",
+            protocol_error_type="parse_error",
+            reason="empty_intent_planner_payload",
+        )
+
+    intents = payload.get("intents")
+    if not isinstance(intents, list):
+        return IntentPlannerStageResult(
+            protocol_status="error",
+            protocol_error_type="schema_error",
+            reason="intent_planner_intents_must_be_list",
+            raw_payload=payload,
+        )
+    if len(intents) != int(target_count):
+        return IntentPlannerStageResult(
+            protocol_status="error",
+            protocol_error_type="schema_error",
+            reason=f"intent_count_mismatch:expected_{int(target_count)}_got_{len(intents)}",
+            raw_payload=payload,
+        )
+
+    plans = []
+    for index, item in enumerate(intents):
+        if not isinstance(item, dict):
+            return IntentPlannerStageResult(
+                protocol_status="error",
+                protocol_error_type="schema_error",
+                reason=f"intent_item_{index}_must_be_object",
+                raw_payload=payload,
+            )
+        missing_keys = sorted(BOOTSTRAP_REQUIRED_KEYS - set(item.keys()))
+        if missing_keys:
+            return IntentPlannerStageResult(
+                protocol_status="error",
+                protocol_error_type="schema_error",
+                reason=f"missing_intent_keys:{','.join(missing_keys)}",
+                raw_payload=payload,
+            )
+        if not isinstance(item.get("forbidden_patterns"), list):
+            return IntentPlannerStageResult(
+                protocol_status="error",
+                protocol_error_type="schema_error",
+                reason="intent_forbidden_patterns_must_be_list",
+                raw_payload=payload,
+            )
+        plans.append(
+            BootstrapPlan(
+                qa_family=qa_family,
+                intent=compact_text(item.get("intent", ""), limit=160),
+                technical_focus=compact_text(
+                    item.get("technical_focus", qa_family), limit=80
+                ),
+                forbidden_patterns=_stable_string_list(
+                    item.get("forbidden_patterns", []), limit=8
+                ),
+                image_grounding_summary=compact_text(
+                    item.get("image_grounding_summary", ""), limit=240
+                ),
+                bootstrap_rationale=compact_text(
+                    item.get("bootstrap_rationale", ""), limit=240
+                ),
+            )
+        )
+
+    return IntentPlannerStageResult(plans=plans, raw_payload=payload)
 
 
 def validate_selector_payload(
